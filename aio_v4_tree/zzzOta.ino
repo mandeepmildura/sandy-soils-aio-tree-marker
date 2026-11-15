@@ -24,9 +24,67 @@ extern "C" {
 }
 
 // Tree-marker build version. Bump it, then tag v<same> to get a CI release.
-#define AIO_TREE_VERSION "1.2.0"
+#define AIO_TREE_VERSION "1.3.0"
 
 #include "zWebPage.h"
+
+// -- saved tree field in flash --------------------------------
+// 256 KB just below the EEPROM area, inside FLASH_RESERVE, so OTA never
+// buffers into it or erases it. Layout: 64-byte header, then count floats
+// east, then count floats north (metres from lat0/lon0, the same frame as
+// treeOnPosition()). Loaded into treeE/treeN at boot.
+#define TREE_STORE_ADDR  (FLASH_BASE_ADDR + 0x780000)
+#define TREE_STORE_SIZE  0x40000
+#define TREE_STORE_MAGIC 0x31535254u              // "TRS1"
+struct TreeStoreHdr { uint32_t magic, count; double lat0, lon0; uint32_t sum, pad; char name[32]; };
+static_assert(sizeof(TreeStoreHdr) == 64, "header must stay 64 bytes");
+char treeFieldName[32] = "";
+
+static uint32_t treeSum(uint32_t n) {
+  uint32_t s = n, w;
+  for (uint32_t i = 0; i < n; i++) { memcpy(&w, &treeE[i], 4); s += w * 3u; memcpy(&w, &treeN[i], 4); s += w * 7u; }
+  return s;
+}
+
+void treeStoreLoad() {
+  const TreeStoreHdr* h = (const TreeStoreHdr*)TREE_STORE_ADDR;
+  if (h->magic != TREE_STORE_MAGIC || h->count == 0 || h->count > TREE_MAX) {
+    Serial.println("TREE: no saved field");
+    return;
+  }
+  const float* src = (const float*)(TREE_STORE_ADDR + sizeof(TreeStoreHdr));
+  memcpy(treeE, src, h->count * 4);
+  memcpy(treeN, src + h->count, h->count * 4);
+  if (treeSum(h->count) != h->sum) { Serial.println("TREE: saved field checksum bad, ignored"); return; }
+  treeLat0 = h->lat0; treeLon0 = h->lon0;
+  treeMPerDegLon = TREE_M_PER_DEG * cos(treeLat0 * M_PI / 180.0);
+  memcpy(treeFieldName, h->name, sizeof(treeFieldName)); treeFieldName[31] = 0;
+  treeCount = h->count; treeHasOrigin = true;
+  Serial.printf("TREE: field '%s' loaded, %lu trees\r\n", treeFieldName, (unsigned long)treeCount);
+}
+
+// Write treeE/treeN[0..treeCount) + origin to flash. Blocks ~1-3 s (sector erases).
+static const char* treeStoreSave() {
+  static TreeStoreHdr h __attribute__((aligned(4)));
+  memset(&h, 0, sizeof(h));
+  h.magic = TREE_STORE_MAGIC; h.count = treeCount; h.lat0 = treeLat0; h.lon0 = treeLon0;
+  h.sum = treeSum(treeCount);
+  memcpy(h.name, treeFieldName, sizeof(h.name));
+  uint32_t bytes = sizeof(h) + treeCount * 8;
+  if (bytes > TREE_STORE_SIZE) return "too many trees for the flash store";
+  uint32_t span = (bytes + FLASH_SECTOR_SIZE - 1) & ~(uint32_t)(FLASH_SECTOR_SIZE - 1);
+  if (flash_erase_block(TREE_STORE_ADDR, span)) return "flash erase failed";
+  if (flash_write_block(TREE_STORE_ADDR, (char*)&h, sizeof(h))) return "flash write failed (header)";
+  if (flash_write_block(TREE_STORE_ADDR + sizeof(h), (char*)treeE, treeCount * 4)) return "flash write failed (east)";
+  if (flash_write_block(TREE_STORE_ADDR + sizeof(h) + treeCount * 4, (char*)treeN, treeCount * 4)) return "flash write failed (north)";
+  const float* src = (const float*)(TREE_STORE_ADDR + sizeof(h));
+  if (memcmp(src, treeE, treeCount * 4) || memcmp(src + treeCount, treeN, treeCount * 4) ||
+      memcmp((const void*)TREE_STORE_ADDR, &h, sizeof(h)))
+    return "flash read-back did not match";
+  return nullptr;
+}
+
+static void webTrees(EthernetClient& c, long contentLen);
 
 EthernetServer otaServer(80);
 
@@ -39,6 +97,7 @@ EthernetServer otaServer(80);
 void otaSetup() {
   otaServer.begin();
   Serial.println("OTA: http server on port 80, tree marker v" AIO_TREE_VERSION);
+  treeStoreLoad();
 }
 
 // next byte from the client, -1 on 5 s stall or disconnect
@@ -204,14 +263,16 @@ static const char* formGet(const char* body, const char* key) {
 }
 
 static void webStatus(EthernetClient& c) {
-  char j[400];
+  char j[700];
   float spd = (float)sqrt(tVelE*tVelE + tVelN*tVelN);
   snprintf(j, sizeof(j),
     "{\"ver\":\"%s\",\"fix\":%u,\"spd\":%.2f,\"trees\":%lu,\"hits\":%lu,\"fires\":%lu,\"on\":%d,"
-    "\"en\":%d,\"cyt\":%d,\"dir\":%d,\"pulse\":%u,\"lag\":%u,\"hr\":%.2f,\"fa\":%.2f,\"lat\":%.2f}",
+    "\"en\":%d,\"cyt\":%d,\"dir\":%d,\"pulse\":%u,\"lag\":%u,\"hr\":%.2f,\"fa\":%.2f,\"lat\":%.2f,"
+    "\"field\":\"%s\",\"fla\":%.7f,\"flo\":%.7f,\"la\":%.7f,\"lo\":%.7f}",
     AIO_TREE_VERSION, tFixQuality, spd, (unsigned long)treeCount, (unsigned long)tTotalHits,
     (unsigned long)tFireCount, tPulseOn ? 1 : 0, treeEnabled ? 1 : 0, treeOwnsCytron ? 1 : 0,
-    treeDirHigh ? 1 : 0, treePulseMs, treeLagMs, treeHitR, treeForeAft, treeLateral);
+    treeDirHigh ? 1 : 0, treePulseMs, treeLagMs, treeHitR, treeForeAft, treeLateral,
+    treeFieldName, treeHasOrigin ? treeLat0 : 0.0, treeHasOrigin ? treeLon0 : 0.0, tLastLat, tLastLon);
   otaReply(c, 200, "application/json", j);
 }
 
@@ -261,6 +322,7 @@ void otaLoop() {
     if (strncasecmp(hdr, "Content-Length:", 15) == 0) contentLen = atol(hdr + 15);
   }
   if (!strncmp(line, "POST /update", 12)) { otaUpdate(c, contentLen); c.stop(); return; }
+  if (!strncmp(line, "POST /trees", 11))  { webTrees(c, contentLen); otaTimeoutMs = 1000; c.stop(); return; }
 
   char body[512] = "";                         // small form bodies only
   if (!strncmp(line, "POST ", 5) && contentLen > 0) {
@@ -273,4 +335,33 @@ void otaLoop() {
   else if (!strncmp(line, "GET / ", 6))          otaReply(c, 200, "text/html", WEB_PAGE);
   else                                           otaReply(c, 404, "text/plain", "Not found.");
   c.stop();
+}
+
+// POST /trees, binary body from the page: "TMT1", u32 count, double lat0,
+// double lon0, char name[32], then count floats east, count floats north.
+static void webTrees(EthernetClient& c, long contentLen) {
+  if (watchdogTimer < WATCHDOG_THRESHOLD) { otaReply(c, 409, "text/plain", "Refused: autosteer is engaged. Turn it off and retry."); return; }
+  struct { uint32_t magic, count; double lat0, lon0; char name[32]; } in;
+  uint8_t* p = (uint8_t*)&in;
+  otaTimeoutMs = 5000;
+  for (size_t i = 0; i < sizeof(in); i++) { int ch = otaGetc(c); if (ch < 0) { otaReply(c, 400, "text/plain", "Upload stalled."); return; } p[i] = ch; }
+  if (in.magic != 0x31544D54u) { otaReply(c, 400, "text/plain", "Not a tree upload."); return; }
+  if (in.count == 0 || in.count > TREE_MAX) { otaReply(c, 400, "text/plain", "Tree count must be 1 to 20000."); return; }
+  if (contentLen != (long)(sizeof(in) + in.count * 8)) { otaReply(c, 400, "text/plain", "Upload size does not match the tree count."); return; }
+  treeCount = 0;                                  // stop firing while the arrays change
+  tApproachIdx = -1; tApproachFired = false;
+  uint8_t* e = (uint8_t*)treeE; uint8_t* n = (uint8_t*)treeN;
+  for (uint32_t i = 0; i < in.count * 4; i++) { int ch = otaGetc(c); if (ch < 0) { otaReply(c, 400, "text/plain", "Upload stalled. Field cleared; send it again."); return; } e[i] = ch; }
+  for (uint32_t i = 0; i < in.count * 4; i++) { int ch = otaGetc(c); if (ch < 0) { otaReply(c, 400, "text/plain", "Upload stalled. Field cleared; send it again."); return; } n[i] = ch; }
+  treeLat0 = in.lat0; treeLon0 = in.lon0;
+  treeMPerDegLon = TREE_M_PER_DEG * cos(treeLat0 * M_PI / 180.0);
+  memcpy(treeFieldName, in.name, sizeof(treeFieldName)); treeFieldName[31] = 0;
+  treeHasOrigin = true; tHistCount = 0; tTotalHits = 0;
+  treeCount = in.count;
+  const char* err = treeStoreSave();
+  char msg[160];
+  if (err) snprintf(msg, sizeof(msg), "%lu trees loaded for this session, but NOT saved: %s.", (unsigned long)treeCount, err);
+  else     snprintf(msg, sizeof(msg), "%lu trees loaded and saved. They stay after power-off and updates.", (unsigned long)treeCount);
+  Serial.println(msg);
+  otaReply(c, err ? 500 : 200, "text/plain", msg);
 }

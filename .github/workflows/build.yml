@@ -40,6 +40,9 @@ jobs:
           v=$(grep -oP '#define AIO_TREE_VERSION "\K[^"]+' aio_v4_tree/zzzOta.ino)
           [ "v$v" = "${{ github.ref_name }}" ] || { echo "tag ${{ github.ref_name }} != v$v"; exit 1; }
 
+      - name: Test the page's CSV import (node + python)
+        run: python3 tools/test_field_csv.py
+
       - name: Build
         run: |
           arduino-cli compile --fqbn teensy:avr:teensy41 --output-dir build aio_v4_tree

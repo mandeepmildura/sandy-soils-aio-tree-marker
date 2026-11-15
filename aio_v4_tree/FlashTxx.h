@@ -66,7 +66,8 @@
   // treeline: was 4 sectors. EEPROM emulation (AgOpenGPS network + steer
   // settings) lives at 0x607C0000, the top 256 KB; flash_move() erases
   // every non-blank sector up to FLASH_RESERVE, so 16 KB would wipe it.
-  #define FLASH_RESERVE		(0x40000)		// reserve top 256 KB (EEPROM + restore)
+  // The 256 KB below that (0x60780000) holds the saved tree field.
+  #define FLASH_RESERVE		(0x80000)		// top 512 KB: tree field + EEPROM + restore
   #define FLASH_BASE_ADDR	(0x60000000)		// code starts here
 #elif defined(__IMXRT1062__) && defined(ARDUINO_TEENSY_MICROMOD)
   #define FLASH_ID		"fw_teensyMM"		// target ID (in code)

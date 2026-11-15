@@ -12,6 +12,15 @@ tree positions while planting. This repo is the AgOpenGPS AiO v4 Keya CANBUS HPR
 | `tools/tree_desk_test.py` | Desk test that drives a simulated row and reports the along-row error. |
 | `tools/tree_gps_diag.py` | Shows what the board receives from its two F9Ps. |
 
+## Loading a field (tree positions)
+
+On the board's page (`http://192.168.5.126/`), in **Field**, pick the CSV and the MGA zone, check the preview (tree
+count, block size, tree spacing, distance from the tractor), then press **Send to AiO**. The CSV rules are the same as
+for the ESP32 marker: a header row with `X`/`Easting` and `Y`/`Northing` in MGA metres (other columns are ignored),
+or `Lat`/`Lon` in degrees, with up to 20000 trees. The browser converts the coordinates; the board stores the trees in a
+reserved 256 KB of flash at 0x60780000, so they survive power-off and firmware updates. Autosteer must be off.
+`python tools/test_field_csv.py` checks the conversion against an independent projection (it runs in CI).
+
 ## Updating the board (no USB needed)
 
 1. Open `http://192.168.5.126/` on the Surface (or any PC on the AgIO network).
