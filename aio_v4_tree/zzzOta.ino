@@ -1,6 +1,9 @@
 // ================================================================
-//  Ethernet OTA: browse to http://<board IP>/ , pick a .hex, Upload
+//  Web page on port 80: status, settings, output test, Ethernet OTA
 // ================================================================
+// GET /         the page (zWebPage.h)       GET /status   JSON for it
+// POST /settings form fields, saved to EEPROM  POST /test   a=hold|pulse|flip
+// POST /update  raw .hex body (OTA, below)
 // The .hex is POSTed raw to /update and parsed line by line straight
 // into spare flash (FlashTxx.c, vendored from FlasherX). Every record is
 // checksum-checked; the image must start at the flash base, fit in the
@@ -20,42 +23,18 @@ extern "C" {
 #include "FlashTxx.h"
 }
 
-// Tree-marker build version. Bump it, then tag aio-v<same> to get a CI release.
-#define AIO_TREE_VERSION "1.1.1"
+// Tree-marker build version. Bump it, then tag v<same> to get a CI release.
+#define AIO_TREE_VERSION "1.2.0"
+
+#include "zWebPage.h"
 
 EthernetServer otaServer(80);
 
-// One-click update: the browser (which has internet; the Teensy doesn't)
-// reads version.txt + aio_v4_tree.hex from the repo's "ota" branch on
-// raw.githubusercontent.com (CORS-open, unlike release downloads; CI pushes
-// that branch on every v* tag) and POSTs the hex to /update like a picked file.
-#define OTA_RAW "https://raw.githubusercontent.com/mandeepmildura/sandy-soils-aio-tree-marker/ota/"
-
-static const char OTA_PAGE[] =
-  "<!doctype html><meta name=viewport content='width=device-width'>"
-  "<title>AiO OTA</title><body style='font-family:sans-serif;max-width:32em;margin:2em auto'>"
-  "<h3>AiO v4 tree marker: firmware update</h3>"
-  "<p>Running: <b>v" AIO_TREE_VERSION "</b> (built " __DATE__ " " __TIME__ ")</p>"
-  "<p>Latest on GitHub: <b id=lv>checking...</b> <button id=ub onclick=latest() disabled>Update to latest</button></p>"
-  "<p>Or pick a <b>.hex</b> file (<a href='https://github.com/mandeepmildura/sandy-soils-aio-tree-marker/releases' target=_blank>releases</a>):<br>"
-  "<input type=file id=f accept='.hex'> <button onclick=pick()>Upload</button></p>"
-  "<p style='color:#a40'>Autosteer must be off.</p>"
-  "<p><progress id=p max=100 value=0 style='width:100%'></progress></p><p id=s></p>"
-  "<script>var R='" OTA_RAW "',C='" AIO_TREE_VERSION "',$=function(i){return document.getElementById(i)};"
-  "function send(b){var x=new XMLHttpRequest();"
-  "x.upload.onprogress=function(e){$('p').value=e.loaded*100/e.total;"
-  "$('s').textContent='Uploading '+Math.round(e.loaded/1024)+' of '+Math.round(e.total/1024)+' KB'};"
-  "x.onload=function(){$('s').textContent=x.responseText};"
-  "x.onerror=function(){$('s').textContent='Connection lost. If it said rebooting, refresh in 10 s.'};"
-  "x.open('POST','/update');x.send(b);$('s').textContent='Uploading...'}"
-  "function pick(){var f=$('f').files[0];if(f)send(f)}"
-  "function latest(){$('s').textContent='Downloading from GitHub...';"
-  "fetch(R+'aio_v4_tree.hex?'+Date.now()).then(function(r){if(!r.ok)throw r.status;return r.blob()})"
-  ".then(send).catch(function(e){$('s').textContent='Download failed ('+e+'). Pick the file instead.'})}"
-  "fetch(R+'version.txt?'+Date.now()).then(function(r){if(!r.ok)throw r.status;return r.text()})"
-  ".then(function(v){v=v.trim();$('lv').textContent='v'+v+(v==C?' (you have it)':'');$('ub').disabled=false})"
-  ".catch(function(){$('lv').textContent='no internet - pick a file below'})"
-  "</script>";
+// The page's "Update to latest" button: the browser (which has internet;
+// the Teensy doesn't) reads version.txt + aio_v4_tree.hex from the repo's
+// "ota" branch on raw.githubusercontent.com (CORS-open, unlike release
+// downloads; CI pushes that branch on every v* tag) and POSTs the hex to
+// /update like a picked file.
 
 void otaSetup() {
   otaServer.begin();
@@ -63,10 +42,13 @@ void otaSetup() {
 }
 
 // next byte from the client, -1 on 5 s stall or disconnect
+// Request line/headers/small bodies time out after 1 s so a stalled browser
+// can't hold up steering; the OTA body gets 5 s per byte gap.
+static uint32_t otaTimeoutMs = 1000;
 static int otaGetc(EthernetClient& c) {
   uint32_t t0 = millis();
   while (!c.available()) {
-    if (!c.connected() || millis() - t0 > 5000) return -1;
+    if (!c.connected() || millis() - t0 > otaTimeoutMs) return -1;
   }
   return c.read();
 }
@@ -144,6 +126,9 @@ static const char* otaReceive(EthernetClient& c, long contentLen, uint32_t bufAd
     if (used >= contentLen) return "upload ended before the hex EOF record";
     if (!otaReadLine(c, line, sizeof(line), &used)) return "upload stalled or line too long";
     if (!line[0]) continue;
+    // A plain HTML form sends multipart/form-data: skip its boundary and part
+    // headers until the first hex record. Junk after a record still fails below.
+    if (line[0] != ':' && lines == 0) continue;
     uint32_t addr; uint8_t type;
     int n = otaParseRecord(line, data, &addr, &type);
     if (n < 0) return "bad hex line (checksum or format) - is this a .hex file?";
@@ -185,7 +170,9 @@ static void otaUpdate(EthernetClient& c, long contentLen) {
   otaStopTree();
 
   uint32_t imageSize = 0;
+  otaTimeoutMs = 5000;
   const char* err = otaReceive(c, contentLen, bufAddr, bufSize, &imageSize);
+  otaTimeoutMs = 1000;
   if (err) {
     Serial.print("OTA: failed: "); Serial.println(err);
     firmware_buffer_free(bufAddr, bufSize);                   // erase the half-written buffer
@@ -208,18 +195,82 @@ static void otaUpdate(EthernetClient& c, long contentLen) {
   flash_move(FLASH_BASE_ADDR, bufAddr, imageSize);            // does not return
 }
 
+// value of key in an x-www-form-urlencoded body ("a=1&b=2"), or nullptr
+static const char* formGet(const char* body, const char* key) {
+  size_t k = strlen(key);
+  for (const char* p = body; p && *p; p = strchr(p, '&') ? strchr(p, '&') + 1 : nullptr)
+    if (!strncmp(p, key, k) && p[k] == '=') return p + k + 1;
+  return nullptr;
+}
+
+static void webStatus(EthernetClient& c) {
+  char j[400];
+  float spd = (float)sqrt(tVelE*tVelE + tVelN*tVelN);
+  snprintf(j, sizeof(j),
+    "{\"ver\":\"%s\",\"fix\":%u,\"spd\":%.2f,\"trees\":%lu,\"hits\":%lu,\"fires\":%lu,\"on\":%d,"
+    "\"en\":%d,\"cyt\":%d,\"dir\":%d,\"pulse\":%u,\"lag\":%u,\"hr\":%.2f,\"fa\":%.2f,\"lat\":%.2f}",
+    AIO_TREE_VERSION, tFixQuality, spd, (unsigned long)treeCount, (unsigned long)tTotalHits,
+    (unsigned long)tFireCount, tPulseOn ? 1 : 0, treeEnabled ? 1 : 0, treeOwnsCytron ? 1 : 0,
+    treeDirHigh ? 1 : 0, treePulseMs, treeLagMs, treeHitR, treeForeAft, treeLateral);
+  otaReply(c, 200, "application/json", j);
+}
+
+static void webSettings(EthernetClient& c, const char* b) {
+  const char* v;
+  if ((v = formGet(b, "pulse"))) { int x = atoi(v); treePulseMs = constrain(x, 10, 5000); }
+  if ((v = formGet(b, "lag")))   { int x = atoi(v); treeLagMs = constrain(x, 0, 1000); }
+  if ((v = formGet(b, "hr")))    { float x = atof(v); if (x >= 0.02f && x <= 5.0f) treeHitR = x; }
+  if ((v = formGet(b, "fa")))    { float x = atof(v); if (fabsf(x) <= 20.0f) treeForeAft = x; }
+  if ((v = formGet(b, "lat")))   { float x = atof(v); if (fabsf(x) <= 20.0f) treeLateral = x; }
+  if ((v = formGet(b, "en")))    treeEnabled = (*v == '1');
+  if ((v = formGet(b, "dir")))   treeSetDir(*v == '1');
+  bool wantCyt = treeOwnsCytron;
+  if ((v = formGet(b, "cyt")))   wantCyt = (*v == '1');
+  if (wantCyt) treeTakeCytron();
+  treeSaveCfg(wantCyt);
+  otaReply(c, 200, "text/plain", (!wantCyt && treeOwnsCytron)
+    ? "Saved. Restart the AiO to hand the Cytron back to steering."
+    : "Saved.");
+}
+
+static void webTest(EthernetClient& c, const char* b) {
+  const char* a = formGet(b, "a");
+  if (!a) { otaReply(c, 400, "text/plain", "No test given."); return; }
+  if (!treeOwnsCytron) {
+    otaReply(c, 409, "text/plain", "Output not in use. Tick 'Use Cytron output', press Save, then test.");
+    return;
+  }
+  if (!strncmp(a, "hold", 4))  { treeTestHold(5000); otaReply(c, 200, "text/plain", "Output ON for 5 seconds. Measure now."); }
+  else if (!strncmp(a, "pulse", 5)) { treeSchedule(-1, 0, 0); otaReply(c, 200, "text/plain", "Pulse sent."); }
+  else if (!strncmp(a, "flip", 4)) {
+    treeSetDir(!treeDirHigh); treeSaveCfg(true);
+    otaReply(c, 200, "text/plain", treeDirHigh ? "Polarity is now A (saved). Test again." : "Polarity is now B (saved). Test again.");
+  }
+  else otaReply(c, 400, "text/plain", "Unknown test.");
+}
+
 void otaLoop() {
   EthernetClient c = otaServer.available();
   if (!c) return;
+  otaTimeoutMs = 1000;
   char line[200];
   long contentLen = -1;
   if (!otaReadLine(c, line, sizeof(line), nullptr)) { c.stop(); return; }
-  bool post = strncmp(line, "POST /update", 12) == 0;
   char hdr[512];
   while (otaReadLine(c, hdr, sizeof(hdr), nullptr) && hdr[0]) {
     if (strncasecmp(hdr, "Content-Length:", 15) == 0) contentLen = atol(hdr + 15);
   }
-  if (post) otaUpdate(c, contentLen);
-  else      otaReply(c, 200, "text/html", OTA_PAGE);
+  if (!strncmp(line, "POST /update", 12)) { otaUpdate(c, contentLen); c.stop(); return; }
+
+  char body[512] = "";                         // small form bodies only
+  if (!strncmp(line, "POST ", 5) && contentLen > 0) {
+    long n = min(contentLen, (long)sizeof(body) - 1);
+    for (long i = 0; i < n; i++) { int ch = otaGetc(c); if (ch < 0) break; body[i] = (char)ch; body[i + 1] = 0; }
+  }
+  if      (!strncmp(line, "GET /status", 11))    webStatus(c);
+  else if (!strncmp(line, "POST /settings", 14)) webSettings(c, body);
+  else if (!strncmp(line, "POST /test", 10))     webTest(c, body);
+  else if (!strncmp(line, "GET / ", 6))          otaReply(c, 200, "text/html", WEB_PAGE);
+  else                                           otaReply(c, 404, "text/plain", "Not found.");
   c.stop();
 }

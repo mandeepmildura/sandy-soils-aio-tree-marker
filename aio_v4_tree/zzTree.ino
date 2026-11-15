@@ -68,6 +68,7 @@ volatile int32_t  tHitIdx = -1;
 volatile float    tHitMiss = 0;
 volatile uint32_t tHitMs = 0;
 uint32_t tTotalHits = 0;
+volatile uint32_t tFireCount = 0;               // every output pulse incl. tests (web page flash)
 IntervalTimer treeTimer;
 elapsedMillis treeStatusTimer;
 
@@ -88,6 +89,7 @@ void treeTick() {
     if (!tPulseOn) {
       treeOutput(true);
       tPulseOn = true;
+      tFireCount++;
       tOffAtUs = now + (uint32_t)treePulseMs * 1000u;
       tHitIdx = tFireIdx; tHitMiss = tFireMiss; tHitMs = millis();
       tHitPending = true;
@@ -307,8 +309,52 @@ void treeHandlePacket(const uint8_t* p, int len) {
   }
 }
 
+// -- settings saved in EEPROM (web Settings page) ------------
+// AgOpenGPS uses EEPROM 0..~70 (ident, steerSettings, steerConfig, network);
+// the tree marker keeps its own block well clear of that.
+#define TREE_EE_ADDR  1024
+#define TREE_EE_MAGIC 0x54524531u                // "TRE1"
+struct TreeCfg { uint32_t magic; float foreAft, lateral, hitR; uint16_t pulseMs, lagMs; uint8_t flags; };
+
+void treeSaveCfg(bool wantCytron) {
+  TreeCfg c = { TREE_EE_MAGIC, treeForeAft, treeLateral, treeHitR, treePulseMs, treeLagMs,
+                (uint8_t)((treeEnabled ? 1 : 0) | (wantCytron ? 2 : 0) | (treeDirHigh ? 4 : 0)) };
+  EEPROM.put(TREE_EE_ADDR, c);
+}
+
+void treeLoadCfg() {
+  TreeCfg c;
+  EEPROM.get(TREE_EE_ADDR, c);
+  if (c.magic != TREE_EE_MAGIC) { Serial.println("TREE: no saved settings, using defaults"); return; }
+  treeForeAft = c.foreAft; treeLateral = c.lateral; treeHitR = c.hitR;
+  treePulseMs = c.pulseMs; treeLagMs = c.lagMs;
+  treeEnabled = c.flags & 1; treeDirHigh = c.flags & 4;
+  if (c.flags & 2) treeTakeCytron();
+  Serial.printf("TREE: settings loaded (pulse %u ms, lag %u ms, radius %.2f m, Cytron %s)\r\n",
+                treePulseMs, treeLagMs, treeHitR, (c.flags & 2) ? "on" : "off");
+}
+
+// Multimeter test: output on for ms (the 100 us timer switches it off).
+// Only when the Cytron is owned by the tree marker.
+bool treeTestHold(uint32_t ms) {
+  if (!treeOwnsCytron) return false;
+  noInterrupts();
+  tFireArmed = false;
+  digitalWriteFast(PWM1_LPWM, HIGH);
+  tPulseOn = true; tFireCount++;
+  tOffAtUs = micros() + ms * 1000u;
+  interrupts();
+  return true;
+}
+
+void treeSetDir(bool high) {
+  treeDirHigh = high;
+  if (treeOwnsCytron) digitalWrite(DIR1_RL_ENABLE, high ? HIGH : LOW);
+}
+
 // ── setup / loop hooks ───────────────────────────────────────
 void treeSetup() {
+  treeLoadCfg();
   if (treeUdp.begin(TREE_PORT_IN)) {
     Serial.print("TREE: listening on UDP "); Serial.println(TREE_PORT_IN);
   }
