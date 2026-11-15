@@ -90,11 +90,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: "AiO Teensy ${{ github.ref_name }}"
-          files: build/aio_v4_tree.hex
+          files: |
+            build/aio_v4_tree.hex
+            tools/update_aio.bat
           body: |
             ## AiO v4.5 tree marker firmware ${{ github.ref_name }}
 
             ### Update over Ethernet (on the Surface)
+            Easiest: download `update_aio.bat` below on the Surface and double-click it (no browser needed).
+
+            Or:
             1. Download `aio_v4_tree.hex` below.
             2. Open http://192.168.5.126/ , pick the file, press **Upload**. Autosteer must be off.
             3. Wait for "OK - verified", then refresh after about 10 s. The page shows the new version.

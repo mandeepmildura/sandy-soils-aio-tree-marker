@@ -23,6 +23,13 @@ reserved 256 KB of flash at 0x60780000, so they survive power-off and firmware u
 
 ## Updating the board (no USB needed)
 
+**Easiest, no browser:** download
+[update_aio.bat](https://github.com/mandeepmildura/sandy-soils-aio-tree-marker/releases/latest/download/update_aio.bat)
+on the Surface and double-click it. It checks the AiO answers, downloads the newest build and sends it with Windows'
+built-in `curl`. If Windows says it protected your PC, choose **More info**, then **Run anyway**.
+
+Or in the browser:
+
 1. Open `http://192.168.5.126/` on the Surface (or any PC on the AgIO network).
 2. Autosteer must be off. Press **Update to latest** (v1.1.0 and later). The browser on the Surface needs internet, for
    example the phone hotspot: it downloads the newest build and sends it to the board. Without internet, download
