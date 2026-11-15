@@ -1,0 +1,91 @@
+name: Build AiO Teensy firmware
+
+# Triggers:
+#   - Push to main           ->  build-only, confirms it compiles
+#   - Push a tag like v1.0.1 ->  build + GitHub Release with aio_v4_tree.hex
+#     (the board's "Update to latest" button reads releases/latest)
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh \
+            | BINDIR="$HOME/bin" sh
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Install Teensy core (same version as the dev PC)
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://www.pjrc.com/teensy/package_teensy_index.json
+          arduino-cli core update-index
+          arduino-cli core install teensy:avr@1.59.0
+
+      - name: Tag must match AIO_TREE_VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          v=$(grep -oP '#define AIO_TREE_VERSION "\K[^"]+' aio_v4_tree/zzzOta.ino)
+          [ "v$v" = "${{ github.ref_name }}" ] || { echo "tag ${{ github.ref_name }} != v$v"; exit 1; }
+
+      - name: Build
+        run: |
+          arduino-cli compile --fqbn teensy:avr:teensy41 --output-dir build aio_v4_tree
+          cp build/aio_v4_tree.ino.hex build/aio_v4_tree.hex
+          ls -lh build/*.hex
+
+      - name: Check the hex is OTA-safe
+        run: |
+          python3 - build/aio_v4_tree.hex <<'EOF'
+          import sys
+          base = 0; lo = 1 << 40; hi = 0; img = {}
+          for ln in open(sys.argv[1]):
+              ln = ln.strip()
+              if not ln: continue
+              b = bytes.fromhex(ln[1:]); n, a, t, d = b[0], (b[1] << 8) | b[2], b[3], b[4:4 + b[0]]
+              assert sum(b) & 0xFF == 0, "checksum"
+              if t == 4: base = int.from_bytes(d, "big") << 16
+              elif t == 0:
+                  A = base + a; lo = min(lo, A); hi = max(hi, A + n)
+                  assert A % 4 == 0 and n % 4 == 0, "record not 4-byte aligned"
+                  for i, x in enumerate(d): img[A + i] = x
+          blob = bytes(img.get(lo + i, 0xFF) for i in range(hi - lo))
+          assert lo == 0x60000000, hex(lo)
+          assert hi < 0x607C0000, "image would reach the EEPROM area"
+          assert b"fw_teensy41" in blob, "no FlasherX ID - OTA would refuse it"
+          print(f"OK {hi - lo} bytes")
+          EOF
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aio-${{ github.sha }}
+          path: build/aio_v4_tree.hex
+
+      - name: Create GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "AiO Teensy ${{ github.ref_name }}"
+          files: build/aio_v4_tree.hex
+          body: |
+            ## AiO v4.5 tree marker firmware ${{ github.ref_name }}
+
+            ### Update over Ethernet (on the Surface)
+            1. Download `aio_v4_tree.hex` below.
+            2. Open http://192.168.5.126/ , pick the file, press **Upload**. Autosteer must be off.
+            3. Wait for "OK - verified", then refresh after about 10 s. The page shows the new version.
+
+            The board checks the file before flashing and keeps the old firmware if anything is wrong.

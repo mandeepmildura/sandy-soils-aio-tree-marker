@@ -1,0 +1,34 @@
+# AiO v4.5 tree marker firmware (Teensy 4.1)
+
+Firmware for the AgOpenGPS **AiO v4.5** board (Teensy 4.1, Keya CAN steering) that marks
+tree positions while planting. This repo is the AgOpenGPS AiO v4 Keya CANBUS HPR Dual firmware
+(27.04.2025, GPL-3.0), with these additions:
+
+| File | What it adds |
+|---|---|
+| `aio_v4_tree/zzTree.ino` | Tree marker. Trees and settings arrive over UDP 8890. The fire is predicted from the F9P GGA, and the spray valve is driven through the onboard Cytron (pins 2/4). It is a dry run until the host sets "own Cytron". |
+| `aio_v4_tree/zzzOta.ino` + `FlashTxx.c/.h` | Ethernet OTA: `http://<board>/` serves a page that uploads a `.hex`, built on [FlasherX](https://github.com/joepasquariello/FlasherX). |
+| `aio_v4_tree/zEthernet.ino` | Fixes a stock bug where the DHCP client could clear the static IP. |
+| `tools/tree_desk_test.py` | Desk test that drives a simulated row and reports the along-row error. |
+| `tools/tree_gps_diag.py` | Shows what the board receives from its two F9Ps. |
+
+## Updating the board (no USB needed)
+
+1. Open `http://192.168.5.126/` on the Surface (or any PC on the AgIO network).
+2. Press **Upload**, with autosteer off. Either pick the `aio_v4_tree.hex` from the newest
+   [release](https://github.com/mandeepmildura/sandy-soils-aio-tree-marker/releases), or use the
+   page's update button if your version has one.
+3. The board checks the file (checksums, flash range, Teensy 4.1 OTA build) before writing it, and keeps the
+   old firmware if anything is wrong. After "OK - verified" it reboots and is back in about 10 s.
+
+The OTA buffer never touches the top 256 KB of flash, so the AgOpenGPS EEPROM settings survive updates.
+The stock firmware has no OTA, so going back to it needs USB and Teensy Loader.
+
+## Releasing
+
+Bump `AIO_TREE_VERSION` in `aio_v4_tree/zzzOta.ino`, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+CI builds with `teensy:avr@1.59.0`, checks the hex is safe for OTA and attaches `aio_v4_tree.hex` to the release.
+
+## Licence
+
+GPL-3.0, the same as the AgOpenGPS firmware it is based on (`LICENSE`). `FlashTxx.c/.h` are public domain (FlasherX).
