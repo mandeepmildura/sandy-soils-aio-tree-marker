@@ -15,9 +15,10 @@ tree positions while planting. This repo is the AgOpenGPS AiO v4 Keya CANBUS HPR
 ## Updating the board (no USB needed)
 
 1. Open `http://192.168.5.126/` on the Surface (or any PC on the AgIO network).
-2. Press **Upload**, with autosteer off. Either pick the `aio_v4_tree.hex` from the newest
-   [release](https://github.com/mandeepmildura/sandy-soils-aio-tree-marker/releases), or use the
-   page's update button if your version has one.
+2. Autosteer must be off. Press **Update to latest** (v1.1.0 and later). The browser on the Surface needs internet, for
+   example the phone hotspot: it downloads the newest build and sends it to the board. Without internet, download
+   `aio_v4_tree.hex` from the [releases](https://github.com/mandeepmildura/sandy-soils-aio-tree-marker/releases)
+   while online, then pick it on the same page and press **Upload**.
 3. The board checks the file (checksums, flash range, Teensy 4.1 OTA build) before writing it, and keeps the
    old firmware if anything is wrong. After "OK - verified" it reboots and is back in about 10 s.
 
@@ -27,7 +28,7 @@ The stock firmware has no OTA, so going back to it needs USB and Teensy Loader.
 ## Releasing
 
 Bump `AIO_TREE_VERSION` in `aio_v4_tree/zzzOta.ino`, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
-CI builds with `teensy:avr@1.59.0`, checks the hex is safe for OTA and attaches `aio_v4_tree.hex` to the release.
+CI builds with `teensy:avr@1.59.0`, checks the hex is safe for OTA and attaches `aio_v4_tree.hex` to the release, then pushes it plus `version.txt` to the `ota` branch, which the board's button reads (raw.githubusercontent.com allows browser downloads; release files don't).
 
 ## Licence
 

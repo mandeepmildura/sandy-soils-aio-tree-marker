@@ -21,27 +21,41 @@ extern "C" {
 }
 
 // Tree-marker build version. Bump it, then tag aio-v<same> to get a CI release.
-#define AIO_TREE_VERSION "1.0.1"
+#define AIO_TREE_VERSION "1.1.0"
 
 EthernetServer otaServer(80);
+
+// One-click update: the browser (which has internet; the Teensy doesn't)
+// reads version.txt + aio_v4_tree.hex from the repo's "ota" branch on
+// raw.githubusercontent.com (CORS-open, unlike release downloads; CI pushes
+// that branch on every v* tag) and POSTs the hex to /update like a picked file.
+#define OTA_RAW "https://raw.githubusercontent.com/mandeepmildura/sandy-soils-aio-tree-marker/ota/"
 
 static const char OTA_PAGE[] =
   "<!doctype html><meta name=viewport content='width=device-width'>"
   "<title>AiO OTA</title><body style='font-family:sans-serif;max-width:32em;margin:2em auto'>"
   "<h3>AiO v4 tree marker: firmware update</h3>"
   "<p>Running: <b>v" AIO_TREE_VERSION "</b> (built " __DATE__ " " __TIME__ ")</p>"
-  "<p>New versions: <a href='https://github.com/mandeepmildura/sandy-soils-aio-tree-marker/releases' target=_blank>"
-  "GitHub releases</a> &rarr; download <b>aio_v4_tree.hex</b>.</p>"
-  "<p>Autosteer must be off. Pick the <b>.hex</b> file:</p>"
-  "<input type=file id=f accept='.hex'> <button onclick=go()>Upload</button>"
+  "<p>Latest on GitHub: <b id=lv>checking...</b> <button id=ub onclick=latest() disabled>Update to latest</button></p>"
+  "<p>Or pick a <b>.hex</b> file (<a href='https://github.com/mandeepmildura/sandy-soils-aio-tree-marker/releases' target=_blank>releases</a>):<br>"
+  "<input type=file id=f accept='.hex'> <button onclick=pick()>Upload</button></p>"
+  "<p style='color:#a40'>Autosteer must be off.</p>"
   "<p><progress id=p max=100 value=0 style='width:100%'></progress></p><p id=s></p>"
-  "<script>function go(){var f=document.getElementById('f').files[0];if(!f)return;"
-  "var x=new XMLHttpRequest(),s=document.getElementById('s');"
-  "x.upload.onprogress=function(e){document.getElementById('p').value=e.loaded*100/e.total;"
-  "s.textContent='Uploading '+Math.round(e.loaded/1024)+' of '+Math.round(e.total/1024)+' KB'};"
-  "x.onload=function(){s.textContent=x.responseText};"
-  "x.onerror=function(){s.textContent='Connection lost. If it said rebooting, refresh in 10 s.'};"
-  "x.open('POST','/update');x.send(f);s.textContent='Uploading...'}</script>";
+  "<script>var R='" OTA_RAW "',C='" AIO_TREE_VERSION "',$=function(i){return document.getElementById(i)};"
+  "function send(b){var x=new XMLHttpRequest();"
+  "x.upload.onprogress=function(e){$('p').value=e.loaded*100/e.total;"
+  "$('s').textContent='Uploading '+Math.round(e.loaded/1024)+' of '+Math.round(e.total/1024)+' KB'};"
+  "x.onload=function(){$('s').textContent=x.responseText};"
+  "x.onerror=function(){$('s').textContent='Connection lost. If it said rebooting, refresh in 10 s.'};"
+  "x.open('POST','/update');x.send(b);$('s').textContent='Uploading...'}"
+  "function pick(){var f=$('f').files[0];if(f)send(f)}"
+  "function latest(){$('s').textContent='Downloading from GitHub...';"
+  "fetch(R+'aio_v4_tree.hex?'+Date.now()).then(function(r){if(!r.ok)throw r.status;return r.blob()})"
+  ".then(send).catch(function(e){$('s').textContent='Download failed ('+e+'). Pick the file instead.'})}"
+  "fetch(R+'version.txt?'+Date.now()).then(function(r){if(!r.ok)throw r.status;return r.text()})"
+  ".then(function(v){v=v.trim();$('lv').textContent='v'+v+(v==C?' (you have it)':'');$('ub').disabled=false})"
+  ".catch(function(){$('lv').textContent='no internet - pick a file below'})"
+  "</script>";
 
 void otaSetup() {
   otaServer.begin();

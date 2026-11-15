@@ -74,6 +74,14 @@ jobs:
           name: aio-${{ github.sha }}
           path: build/aio_v4_tree.hex
 
+      - name: Publish to the ota branch (the board page's "Update to latest" reads it)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir ota && cp build/aio_v4_tree.hex ota/ && echo "${GITHUB_REF_NAME#v}" > ota/version.txt
+          cd ota && git init -q -b ota && git add .
+          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -qm "ota ${GITHUB_REF_NAME}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" ota
+
       - name: Create GitHub Release (tags only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
