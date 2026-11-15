@@ -128,7 +128,7 @@ function poll(){fetch('/status').then(function(r){return r.json()}).then(functio
  if(TR&&d.trees&&(d.fla||d.flo)){var dd=Math.hypot((d.flo-d.lo)*MPD*Math.cos(d.la*Math.PI/180),(d.fla-d.la)*MPD);$('dist').textContent=fmtD(dd)+(dd>5000?' (check zone/file)':'')}else $('dist').textContent=d.trees?'no GPS yet':'-';$('hits').textContent=d.hits;
  $('out').textContent=d.cyt?(d.on?'ON':'off')+' (polarity '+(d.dir?'A':'B')+')':'not in use (dry run)';
  if(lastF>=0&&d.fires>lastF){$('flash').className='on';$('flash').textContent='MARK  #'+d.fires;clearTimeout(ft);ft=setTimeout(function(){$('flash').className=''},500)}
- lastF=d.fires}).catch(function(){$('fix').textContent='AiO not answering'}).then(function(){setTimeout(poll,400)})}
+ lastF=d.fires}).catch(function(){$('fix').textContent='AiO not answering'}).then(function(){setTimeout(poll,700)})}
 $('sf').onsubmit=function(e){e.preventDefault();var b='en='+($('en').checked?1:0)+'&cyt='+($('cyt').checked?1:0)+'&dir='+$('dir').value;
  F.forEach(function(k){b+='&'+k+'='+encodeURIComponent($(k).value)});$('smsg').textContent='Saving...';
  post('/settings',b).then(function(t){$('smsg').textContent=t}).catch(function(){$('smsg').textContent='Not saved: AiO not answering'})};

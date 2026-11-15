@@ -24,7 +24,7 @@ extern "C" {
 }
 
 // Tree-marker build version. Bump it, then tag v<same> to get a CI release.
-#define AIO_TREE_VERSION "1.3.0"
+#define AIO_TREE_VERSION "1.3.1"
 
 #include "zWebPage.h"
 
@@ -310,9 +310,41 @@ static void webTest(EthernetClient& c, const char* b) {
   else otaReply(c, 400, "text/plain", "Unknown test.");
 }
 
+// Never use otaServer.available(): NativeEthernet's version spins up to
+// 10 s inside loop() on any connection that hasn't sent its request yet,
+// and Chrome opens such "preconnect" sockets all the time. That froze
+// steering and GPS whenever the page was open on the Surface (v1.2.0-1.3.0).
+// accept() returns new connections at once; they wait here (max 3, 3 s)
+// until their request arrives, checked without blocking.
+#define WEB_PENDING 3
+static EthernetClient webPend[WEB_PENDING];
+static uint32_t webPendMs[WEB_PENDING];
+static void webHandle(EthernetClient& c);
+
 void otaLoop() {
-  EthernetClient c = otaServer.available();
-  if (!c) return;
+  EthernetClient n = otaServer.accept();
+  if (n) {
+    int slot = 0;
+    for (int i = 0; i < WEB_PENDING; i++) {
+      if (!webPend[i]) { slot = i; break; }
+      if (webPendMs[i] < webPendMs[slot]) slot = i;      // all busy: replace the oldest
+    }
+    if (webPend[slot]) webPend[slot].stop();
+    webPend[slot] = n; webPendMs[slot] = millis();
+  }
+  for (int i = 0; i < WEB_PENDING; i++) {
+    if (!webPend[i]) continue;
+    if (webPend[i].available() > 0) {
+      webHandle(webPend[i]);
+      webPend[i] = EthernetClient();
+    } else if (!webPend[i].connected() || millis() - webPendMs[i] > 3000) {
+      webPend[i].stop();
+      webPend[i] = EthernetClient();
+    }
+  }
+}
+
+static void webHandle(EthernetClient& c) {
   otaTimeoutMs = 1000;
   char line[200];
   long contentLen = -1;
