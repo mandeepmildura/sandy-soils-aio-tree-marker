@@ -24,7 +24,7 @@ extern "C" {
 }
 
 // Tree-marker build version. Bump it, then tag v<same> to get a CI release.
-#define AIO_TREE_VERSION "1.3.1"
+#define AIO_TREE_VERSION "1.3.2"
 
 #include "zWebPage.h"
 
@@ -159,11 +159,29 @@ static int otaParseRecord(const char* line, uint8_t* data, uint32_t* addr, uint8
   return len;
 }
 
+// NativeEthernet's socketSend() spins in loop() until the WHOLE write fits
+// in the socket's send buffer, which it sets to 2 KB. One write of the
+// 12 KB page therefore never returned: the AiO hung on the first page load
+// (v1.2.0-1.3.1, field 2026-11-16). Write in 1 KB pieces, waiting at most
+// 3 s for room each time; give up (drop the reply) rather than hang.
+static bool webWrite(EthernetClient& c, const char* p, size_t n) {
+  while (n) {
+    size_t k = n < 1024 ? n : 1024;
+    uint32_t t0 = millis();
+    while (c.availableForWrite() < (int)k) {
+      if (!c.connected() || millis() - t0 > 3000) return false;
+    }
+    if (c.write((const uint8_t*)p, k) != k) return false;
+    p += k; n -= k;
+  }
+  return true;
+}
+
 static void otaReply(EthernetClient& c, int code, const char* type, const char* body) {
-  c.printf("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %u\r\nConnection: close\r\n\r\n",
-           code, code == 200 ? "OK" : "Error", type, (unsigned)strlen(body));
-  c.write((const uint8_t*)body, strlen(body));
-  c.flush();
+  char h[200];
+  int hl = snprintf(h, sizeof(h), "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %u\r\nConnection: close\r\n\r\n",
+                    code, code == 200 ? "OK" : "Error", type, (unsigned)strlen(body));
+  if (webWrite(c, h, hl)) webWrite(c, body, strlen(body));
 }
 
 static void otaStopTree() {
