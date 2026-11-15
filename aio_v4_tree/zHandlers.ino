@@ -21,10 +21,11 @@ char vtgHeading[12] = { };
 char speedKnots[10] = { };
 
 // IMU
-char imuHeading[6];
-char imuRoll[6];
-char imuPitch[6];
-char imuYawRate[6];
+// treeline: were [6]; dual writes "-12.34" / "359.99" (6 chars + NUL) and overflowed
+char imuHeading[12];
+char imuRoll[12];
+char imuPitch[12];
+char imuYawRate[12];
 
 // HPR
 char solQuality[2];

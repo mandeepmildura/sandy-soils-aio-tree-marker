@@ -21,7 +21,7 @@ extern "C" {
 }
 
 // Tree-marker build version. Bump it, then tag aio-v<same> to get a CI release.
-#define AIO_TREE_VERSION "1.1.0"
+#define AIO_TREE_VERSION "1.1.1"
 
 EthernetServer otaServer(80);
 

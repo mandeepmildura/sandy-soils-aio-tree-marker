@@ -782,7 +782,7 @@ void ReceiveUdp()
 
                 SendUdp(helloFromAutoSteer, sizeof(helloFromAutoSteer), Eth_ipDestination, portDestination);
                 }
-                if(useBNO08xRVC || useBNO08xI2C)
+                if((useBNO08xRVC || useBNO08xI2C) && !useDual)   // treeline: dual supplies roll; don't advertise the IMU
                 {
                  SendUdp(helloFromIMU, sizeof(helloFromIMU), Eth_ipDestination, portDestination); 
                 }

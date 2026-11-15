@@ -354,7 +354,9 @@ void loop()
     }
 
     //i2c BNO08x
-    if (useBNO08xI2C && i2cBNOTimer > 20)
+    // treeline: not in dual mode - readBNO() writes imuRoll/imuHeading, which would
+    // overwrite the dual-antenna roll/heading before $PAOGI is sent (roll flickering L/R).
+    if (useBNO08xI2C && !useDual && i2cBNOTimer > 20)
     {
         i2cBNOTimer = 0;
         readBNO();
