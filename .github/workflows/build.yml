@@ -93,6 +93,7 @@ jobs:
           files: |
             build/aio_v4_tree.hex
             tools/update_aio.bat
+            tools/diag_aio.bat
           body: |
             ## AiO v4.5 tree marker firmware ${{ github.ref_name }}
 
