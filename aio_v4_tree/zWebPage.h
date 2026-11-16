@@ -25,11 +25,14 @@ small{color:#666}
 
 <div class=card><h2>Status</h2>
 <div class=row><span>GPS fix</span><b id=fix>-</b></div>
+<div class=row><span>GPS positions per second</span><b id=hz>-</b></div>
 <div class=row><span>Speed</span><b id=spd>-</b></div>
 <div class=row><span>Field</span><b id=field>-</b></div>
 <div class=row><span>Trees loaded</span><b id=trees>-</b></div>
 <div class=row><span>Field start from tractor</span><b id=dist>-</b></div>
+<div class=row><span>Nearest tree to nozzle</span><b id=near>-</b></div>
 <div class=row><span>Trees marked</span><b id=hits>-</b></div>
+<div class=row><span>Last mark</span><b id=lastm>-</b></div>
 <div class=row><span>Output</span><b id=out>-</b></div>
 </div>
 
@@ -126,6 +129,9 @@ function poll(){fetch('/status').then(function(r){return r.json()}).then(functio
  $('spd').textContent=(d.spd*3.6).toFixed(1)+' km/h';$('trees').textContent=d.trees;$('field').textContent=d.field||'none';
  TR=(d.la||d.lo)?[d.la,d.lo]:null;
  if(TR&&d.trees&&(d.fla||d.flo)){var dd=Math.hypot((d.flo-d.lo)*MPD*Math.cos(d.la*Math.PI/180),(d.fla-d.la)*MPD);$('dist').textContent=fmtD(dd)+(dd>5000?' (check zone/file)':'')}else $('dist').textContent=d.trees?'no GPS yet':'-';$('hits').textContent=d.hits;
+ $('hz').textContent=d.hz.toFixed(1)+(d.hz>0&&d.hz<5?' (low: 10 wanted)':'');
+ $('near').textContent=d.nd<0?'-':d.nd.toFixed(2)+' m: '+Math.abs(d.na).toFixed(2)+' m '+(d.na>=0?'ahead':'behind')+', '+Math.abs(d.nc).toFixed(2)+' m '+(d.nc>=0?'right':'left');
+ $('lastm').textContent=d.lhi<0?'-':'tree #'+(d.lhi+1)+', '+(d.lhm*100).toFixed(0)+' cm off line';
  $('out').textContent=d.cyt?(d.on?'ON':'off')+' (polarity '+(d.dir?'A':'B')+')':'not in use (dry run)';
  if(lastF>=0&&d.fires>lastF){$('flash').className='on';$('flash').textContent='MARK  #'+d.fires;clearTimeout(ft);ft=setTimeout(function(){$('flash').className=''},500)}
  lastF=d.fires}).catch(function(){$('fix').textContent='AiO not answering'}).then(function(){setTimeout(poll,700)})}

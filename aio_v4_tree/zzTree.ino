@@ -68,7 +68,12 @@ volatile int32_t  tHitIdx = -1;
 volatile float    tHitMiss = 0;
 volatile uint32_t tHitMs = 0;
 uint32_t tTotalHits = 0;
-volatile uint32_t tFireCount = 0;               // every output pulse incl. tests (web page flash)
+volatile uint32_t tFireCount = 0;
+// live diagnostics for the web page
+float    tNearD = -1, tNearAlong = 0, tNearCross = 0;   // nozzle -> nearest tree (m); along +ahead, cross +right
+int32_t  tNearIdx = -1;
+float    tGgaHz = 0;                                    // GGA sentences per second (last ~5 s)
+int32_t  tLastHitIdx = -1; float tLastHitMiss = 0;               // every output pulse incl. tests (web page flash)
 IntervalTimer treeTimer;
 elapsedMillis treeStatusTimer;
 
@@ -155,6 +160,20 @@ void treeOnPosition(double lat, double lon, uint32_t fixUs) {
   // antenna -> nozzle (+foreAft = behind, +lateral = right)
   double nozE = e - treeForeAft * tFwdE + treeLateral * tFwdN;
   double nozN = n - treeForeAft * tFwdN - treeLateral * tFwdE;
+
+  // diagnostics: nearest tree over the whole field, split into along/cross
+  // track so the page shows a systematic offset (wrong nozzle offset or datum)
+  if (treeCount) {
+    double best = 1e18; int32_t bi = -1;
+    for (uint32_t i = 0; i < treeCount; i++) {
+      double de = treeE[i] - nozE, dn = treeN[i] - nozN, d2 = de*de + dn*dn;
+      if (d2 < best) { best = d2; bi = (int32_t)i; }
+    }
+    double de = treeE[bi] - nozE, dn = treeN[bi] - nozN;
+    tNearIdx = bi; tNearD = (float)sqrt(best);
+    tNearAlong = (float)(de * tFwdE + dn * tFwdN);
+    tNearCross = (float)(de * tFwdN - dn * tFwdE);
+  }
 
   if (!treeEnabled || treeCount == 0) return;
 
@@ -375,10 +394,12 @@ void treeLoop() {
     int32_t idx = tHitIdx; float miss = tHitMiss; uint32_t ms = tHitMs;
     tHitPending = false;
     interrupts();
-    if (idx >= 0) tTotalHits++;
+    if (idx >= 0) { tTotalHits++; tLastHitIdx = idx; tLastHitMiss = miss; }
     uint8_t b[15] = { 'T', 'M', 'H' };
     memcpy(b + 3, &idx, 4); memcpy(b + 7, &miss, 4); memcpy(b + 11, &ms, 4);
     treeSend(b, sizeof(b));
   }
   if (treeStatusTimer > 1000) { treeStatusTimer = 0; treeSendStatus(); }
+  static elapsedMillis hzTimer; static uint32_t hzLast = 0;
+  if (hzTimer >= 5000) { tGgaHz = (treeGgaCount - hzLast) * 1000.0f / hzTimer; hzLast = treeGgaCount; hzTimer = 0; }
 }
