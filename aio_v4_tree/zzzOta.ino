@@ -24,7 +24,7 @@ extern "C" {
 }
 
 // Tree-marker build version. Bump it, then tag v<same> to get a CI release.
-#define AIO_TREE_VERSION "1.3.3"
+#define AIO_TREE_VERSION "1.3.4"
 
 #include "zWebPage.h"
 
@@ -287,12 +287,12 @@ static void webStatus(EthernetClient& c) {
     "{\"ver\":\"%s\",\"fix\":%u,\"spd\":%.2f,\"trees\":%lu,\"hits\":%lu,\"fires\":%lu,\"on\":%d,"
     "\"en\":%d,\"cyt\":%d,\"dir\":%d,\"pulse\":%u,\"lag\":%u,\"hr\":%.2f,\"fa\":%.2f,\"lat\":%.2f,"
     "\"field\":\"%s\",\"fla\":%.7f,\"flo\":%.7f,\"la\":%.7f,\"lo\":%.7f,"
-    "\"hz\":%.1f,\"ni\":%ld,\"nd\":%.2f,\"na\":%.2f,\"nc\":%.2f,\"lhi\":%ld,\"lhm\":%.2f}",
+    "\"hz\":%.1f,\"ni\":%ld,\"nd\":%.2f,\"na\":%.2f,\"nc\":%.2f,\"lhi\":%ld,\"lhm\":%.2f,\"sn\":%.2f,\"se\":%.2f}",
     AIO_TREE_VERSION, tFixQuality, spd, (unsigned long)treeCount, (unsigned long)tTotalHits,
     (unsigned long)tFireCount, tPulseOn ? 1 : 0, treeEnabled ? 1 : 0, treeOwnsCytron ? 1 : 0,
     treeDirHigh ? 1 : 0, treePulseMs, treeLagMs, treeHitR, treeForeAft, treeLateral,
     treeFieldName, treeHasOrigin ? treeLat0 : 0.0, treeHasOrigin ? treeLon0 : 0.0, tLastLat, tLastLon,
-    tGgaHz, (long)tNearIdx, tNearD, tNearAlong, tNearCross, (long)tLastHitIdx, tLastHitMiss);
+    tGgaHz, (long)tNearIdx, tNearD, tNearAlong, tNearCross, (long)tLastHitIdx, tLastHitMiss, treeShiftN, treeShiftE);
   otaReply(c, 200, "application/json", j);
 }
 
@@ -303,6 +303,8 @@ static void webSettings(EthernetClient& c, const char* b) {
   if ((v = formGet(b, "hr")))    { float x = atof(v); if (x >= 0.02f && x <= 5.0f) treeHitR = x; }
   if ((v = formGet(b, "fa")))    { float x = atof(v); if (fabsf(x) <= 20.0f) treeForeAft = x; }
   if ((v = formGet(b, "lat")))   { float x = atof(v); if (fabsf(x) <= 20.0f) treeLateral = x; }
+  if ((v = formGet(b, "sn")))    { float x = atof(v); if (fabsf(x) <= 5.0f) treeShiftN = x; }
+  if ((v = formGet(b, "se")))    { float x = atof(v); if (fabsf(x) <= 5.0f) treeShiftE = x; }
   if ((v = formGet(b, "en")))    treeEnabled = (*v == '1');
   if ((v = formGet(b, "dir")))   treeSetDir(*v == '1');
   bool wantCyt = treeOwnsCytron;

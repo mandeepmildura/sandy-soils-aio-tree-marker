@@ -54,10 +54,14 @@ or <b>Lat</b> and <b>Lon</b> columns in degrees. One tree per line, up to 20000.
 <label>Hit radius (m) <input type=number id=hr min=0.02 max=5 step=0.01></label>
 <label>Nozzle behind antenna (m) <input type=number id=fa step=0.01></label>
 <label>Nozzle right of antenna (m) <input type=number id=lat step=0.01></label>
+<label>Shift field north (m) <input type=number id=sn min=-5 max=5 step=0.01></label>
+<label>Shift field east (m) <input type=number id=se min=-5 max=5 step=0.01></label>
 <label>Output polarity <select id=dir><option value=1>A</option><option value=0>B</option></select></label>
 <div class=btns><button type=submit>Save</button></div>
 <p class=note>Offsets are measured from the right-hand (main) GPS antenna. Left of it is negative.
-Turning the Cytron output off needs an AiO restart.</p>
+Turning the Cytron output off needs an AiO restart.
+Shift field: if marks land on the same spot both ways but off the peg, move every tree by that amount
+(marks 0.12 m north of the pegs: enter -0.12 north).</p>
 <div class=msg id=smsg></div>
 </form></div>
 
@@ -76,7 +80,7 @@ Press <b>Hold ON 5 s</b>. About +12 V: correct. About -12 V: press <b>Flip polar
 </main>
 <script>
 var R='https://raw.githubusercontent.com/mandeepmildura/sandy-soils-aio-tree-marker/ota/',$=function(i){return document.getElementById(i)},C='',lastF=-1,ft;
-var F=['pulse','lag','hr','fa','lat'];
+var F=['pulse','lag','hr','fa','lat','sn','se'];
 var MPD=111319.49,FD=null;
 function utm2ll(E,N,zone){var a=6378137,e2=0.00669437999014,k0=0.9996,e4=e2*e2,e6=e4*e2,ep2=e2/(1-e2);
  var y=N-(N>5e6?1e7:0),x=E-5e5,lon0=((zone-1)*6-180+3)*Math.PI/180,M=y/k0;

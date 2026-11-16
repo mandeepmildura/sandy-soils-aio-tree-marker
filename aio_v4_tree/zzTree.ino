@@ -43,6 +43,7 @@ bool     treeHasOrigin = false;
 
 // settings
 float    treeForeAft = 0, treeLateral = 0, treeHitR = 0.35f;
+float    treeShiftE = 0, treeShiftN = 0;      // move the whole field (m), for survey/datum offsets
 uint16_t treePulseMs = 60, treeLagMs = 0;
 bool     treeEnabled = false, treeDirHigh = true;
 
@@ -158,8 +159,9 @@ void treeOnPosition(double lat, double lon, uint32_t fixUs) {
   if (spd > 0.2) { tFwdE = tVelE / spd; tFwdN = tVelN / spd; }   // keep last heading when slow
 
   // antenna -> nozzle (+foreAft = behind, +lateral = right)
-  double nozE = e - treeForeAft * tFwdE + treeLateral * tFwdN;
-  double nozN = n - treeForeAft * tFwdN - treeLateral * tFwdE;
+  // field shift: moving every tree by (+shiftE, +shiftN) == moving the nozzle by the opposite
+  double nozE = e - treeForeAft * tFwdE + treeLateral * tFwdN - treeShiftE;
+  double nozN = n - treeForeAft * tFwdN - treeLateral * tFwdE - treeShiftN;
 
   // diagnostics: nearest tree over the whole field, split into along/cross
   // track so the page shows a systematic offset (wrong nozzle offset or datum)
@@ -332,19 +334,22 @@ void treeHandlePacket(const uint8_t* p, int len) {
 // AgOpenGPS uses EEPROM 0..~70 (ident, steerSettings, steerConfig, network);
 // the tree marker keeps its own block well clear of that.
 #define TREE_EE_ADDR  1024
-#define TREE_EE_MAGIC 0x54524531u                // "TRE1"
-struct TreeCfg { uint32_t magic; float foreAft, lateral, hitR; uint16_t pulseMs, lagMs; uint8_t flags; };
+#define TREE_EE_MAGIC  0x54524532u               // "TRE2" (adds field shift)
+#define TREE_EE_MAGIC1 0x54524531u               // "TRE1" (v1.2.0-1.3.3, no shift)
+struct TreeCfg { uint32_t magic; float foreAft, lateral, hitR; uint16_t pulseMs, lagMs; uint8_t flags; float shiftE, shiftN; };
 
 void treeSaveCfg(bool wantCytron) {
   TreeCfg c = { TREE_EE_MAGIC, treeForeAft, treeLateral, treeHitR, treePulseMs, treeLagMs,
-                (uint8_t)((treeEnabled ? 1 : 0) | (wantCytron ? 2 : 0) | (treeDirHigh ? 4 : 0)) };
+                (uint8_t)((treeEnabled ? 1 : 0) | (wantCytron ? 2 : 0) | (treeDirHigh ? 4 : 0)),
+                treeShiftE, treeShiftN };
   EEPROM.put(TREE_EE_ADDR, c);
 }
 
 void treeLoadCfg() {
   TreeCfg c;
   EEPROM.get(TREE_EE_ADDR, c);
-  if (c.magic != TREE_EE_MAGIC) { Serial.println("TREE: no saved settings, using defaults"); return; }
+  if (c.magic != TREE_EE_MAGIC && c.magic != TREE_EE_MAGIC1) { Serial.println("TREE: no saved settings, using defaults"); return; }
+  if (c.magic == TREE_EE_MAGIC) { treeShiftE = c.shiftE; treeShiftN = c.shiftN; }
   treeForeAft = c.foreAft; treeLateral = c.lateral; treeHitR = c.hitR;
   treePulseMs = c.pulseMs; treeLagMs = c.lagMs;
   treeEnabled = c.flags & 1; treeDirHigh = c.flags & 4;
