@@ -94,6 +94,8 @@ jobs:
             build/aio_v4_tree.hex
             tools/update_aio.bat
             tools/diag_aio.bat
+            tools/relay_aio.bat
+            tools/relay_aio.ps1
           body: |
             ## AiO v4.5 tree marker firmware ${{ github.ref_name }}
 

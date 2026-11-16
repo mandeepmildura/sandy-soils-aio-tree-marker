@@ -41,6 +41,33 @@ Or in the browser:
 The OTA buffer never touches the top 256 KB of flash, so the AgOpenGPS EEPROM settings survive updates.
 The stock firmware has no OTA, so going back to it needs USB and Teensy Loader.
 
+## Watching the AiO live from Mandeep's PC
+
+The Surface has only a phone-hotspot link to the cab and no inbound ports.
+`relay_aio.bat` runs on the Surface and forwards `/status` to HiveMQ Cloud over
+TLS; a second script on Mandeep's PC subscribes and prints a live line.
+
+**On the Surface** (double-click, nothing to install): download
+[relay_aio.bat](https://github.com/mandeepmildura/sandy-soils-aio-tree-marker/releases/latest/download/relay_aio.bat)
+and [relay_aio.ps1](https://github.com/mandeepmildura/sandy-soils-aio-tree-marker/releases/latest/download/relay_aio.ps1)
+into the same folder, double-click the .bat. First run asks for the HiveMQ
+host, user and password; they are saved per-user with Windows DPAPI under
+`%APPDATA%\sandy-soils-aio\`. After that it runs quietly, one request per
+second to the AiO (no parallel or idle sockets — the board hangs on those),
+publishing JSON to `treemarker/aio/status` (retained) and one message to
+`treemarker/aio/mark` every time `hits` or `fires` rises.
+
+**On Mandeep's PC**: `tools/watch_aio.py` with env vars:
+
+```
+set AIO_MQTT_HOST=<your HiveMQ cluster>.s2.eu.hivemq.cloud
+set AIO_MQTT_USER=<the PC's read-only user>
+set AIO_MQTT_PASS=<password>
+python tools/watch_aio.py
+```
+
+Uses `paho-mqtt` when installed; otherwise a stdlib-only fallback.
+
 ## Releasing
 
 Bump `AIO_TREE_VERSION` in `aio_v4_tree/zzzOta.ino`, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
