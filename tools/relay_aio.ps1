@@ -4,8 +4,9 @@
 # 2. Shares the latest reading on port 8126 (any network the Surface is on,
 #    e.g. the phone hotspot): GET /status, /log (today's CSV), /marks. Another
 #    PC reads the Surface, never the AiO, so the AiO keeps a single client.
-# 3. Optionally publishes to HiveMQ Cloud (press Enter at the host prompt
-#    to run without MQTT).
+# 3. Publishes to the Sandy Soil MQTT broker for data collection. Host and
+#    login are built in; nothing is asked on the Surface. The password is set
+#    once from the phone page (Tailscale addresses only), stored with DPAPI.
 # Reads http://<aio>/status once a second, publishes JSON to
 # treemarker/aio/status (retained). When hits or fires rises, publishes
 # a one-shot message to treemarker/aio/mark with the latest lhi/lhm.
@@ -24,11 +25,12 @@ param(
   [string]$TopicMark   = "treemarker/aio/mark",
   [switch]$Reconfigure,
   [string]$ConfigFile,
-  [string]$MqttHost,
+  [string]$MqttHost = 'mqtt.sandysoilautomations.com.au',
   [int]   $MqttPort = 8883,
   [switch]$NoTls,
-  [string]$MqttUser,
+  [string]$MqttUser = 'aio-cab',
   [string]$MqttPass,
+  [string[]]$SetupFrom = @('100.'),   # who may set the password: Tailscale addresses (100.64.0.0/10)
   [int]   $PollMs = 1000,
   [int]   $AioTimeoutSec = 2,
   [int]   $KeepAliveSec = 30,
@@ -70,28 +72,24 @@ function Load-Config {
   }
 }
 
+function Save-Config {
+  param([string]$Path, [hashtable]$Cfg)
+  $sec = ConvertTo-SecureString $Cfg.Pass -AsPlainText -Force
+  @{ Host=$Cfg.Host; Port=$Cfg.Port; Tls=$Cfg.Tls; User=$Cfg.User; Pass=(ConvertFrom-SecureString $sec) } | Export-Clixml $Path
+}
+
 function Prompt-Config {
+  # Only with -Reconfigure, typed on the Surface itself. Normally the password
+  # is set from the phone page instead.
   param([string]$Path)
-  Say ''
-  Say 'AiO -> HiveMQ relay: first-run setup'
-  Say '------------------------------------'
-  $h = Read-Host 'HiveMQ host (e.g. xxxxx.s2.eu.hivemq.cloud), or just Enter to run without MQTT'
-  if ([string]::IsNullOrWhiteSpace($h)) {
-    @{ Disabled=$true } | Export-Clixml $Path
-    Say "MQTT off (logging and sharing still run). Use -Reconfigure to set it up later."
-    return @{ Disabled=$true }
-  }
-  $portStr = Read-Host 'Port [8883]'
-  $port = if ([string]::IsNullOrWhiteSpace($portStr)) { 8883 } else { [int]$portStr }
-  $u = Read-Host 'Username (Surface publish user)'
-  $sec = Read-Host 'Password' -AsSecureString
-  $enc = ConvertFrom-SecureString $sec
-  @{ Host=$h; Port=$port; Tls=$true; User=$u; Pass=$enc } | Export-Clixml $Path
-  Say "Saved to $Path."
+  $sec = Read-Host "Password for $MqttUser on $MqttHost" -AsSecureString
   $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
   try   { $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
   finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-  return @{ Host=$h; Port=$port; Tls=$true; User=$u; Pass=$plain }
+  $c = @{ Host=$MqttHost; Port=$MqttPort; Tls=(-not $NoTls); User=$MqttUser; Pass=$plain }
+  Save-Config -Path $Path -Cfg $c
+  Say "Saved to $Path."
+  return $c
 }
 
 # ----- MQTT encoding -------------------------------------------------------
@@ -307,6 +305,9 @@ small,.mut{color:var(--mut)}a{color:inherit}
 <div class="row"><span>Field</span><b id="field">-</b></div>
 </div>
 <div class="card"><table><thead><tr><th>Time</th><th>Tree</th><th>Dir</th><th>Miss</th><th>km/h</th></tr></thead><tbody id="list"><tr><td colspan="5" class="mut">no marks yet</td></tr></tbody></table></div>
+<div class="card" id="dc"><div class="row"><span>Data collection</span><b id="mq">-</b></div>
+<form id="sf" style="display:none;margin-top:8px" onsubmit="return setpw()"><small class="mut">Paste the aio-cab password once. Saved encrypted on the Surface.</small><br>
+<input id="pw" type="password" autocomplete="off" style="font-size:1rem;padding:6px;width:60%"> <button style="font-size:1rem;padding:6px 12px">Connect</button> <small id="sm"></small></form></div>
 <div class="card"><small id="set">-</small><br><small><a href="/log?dl=1">Download today's log</a> &middot; <a href="/marks?dl=1">Download marks</a></small></div>
 </main><script>
 var $=function(i){return document.getElementById(i)},last=-1,ft;
@@ -322,7 +323,12 @@ function st(){fetch('/status',{cache:'no-store'}).then(function(r){return r.json
  last=d.hits}).catch(function(){$('gps').innerHTML='<span class="bad">no data</span>'})}
 function rec(){fetch('/recent',{cache:'no-store'}).then(function(r){return r.json()}).then(function(a){if(!a.length)return;
  $('list').innerHTML=a.slice().reverse().map(function(m){return '<tr><td>'+m.t+'</td><td>'+(m.tree+1)+'</td><td>'+m.dir+'</td><td>'+cm(m.miss)+' cm</td><td>'+m.kmh+'</td></tr>'}).join('')})}
-st();rec();setInterval(st,1000);setInterval(rec,5000);
+var MQ={connected:['connected','ok'],connecting:['connecting...','warn'],waiting:['not set up','warn'],off:['off','bad']};
+function rl(){fetch('/relay',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){var m=MQ[d.mqtt]||[d.mqtt,'warn'];
+ $('mq').innerHTML='<span class="'+m[1]+'">'+m[0]+'</span>';$('sf').style.display=(d.canSetup&&d.mqtt!=='connected')?'block':'none'})}
+function setpw(){var v=$('pw').value;if(!v)return false;$('sm').textContent='saving...';
+ fetch('/setup',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'pass='+encodeURIComponent(v)}).then(function(r){return r.text()}).then(function(t){$('sm').textContent=t;$('pw').value='';rl()});return false}
+st();rec();rl();setInterval(st,1000);setInterval(rec,5000);setInterval(rl,3000);
 </script></body></html>
 '@
 
@@ -361,9 +367,35 @@ function Serve-Share {
       $ns = $c.GetStream()
       $sr = New-Object System.IO.StreamReader($ns)
       $line = $sr.ReadLine()
-      $path = if ($line -match '^GET (\S+)') { $Matches[1] } else { '' }
+      $method = ''; $path = ''
+      if ($line -match '^(GET|POST) (\S+)') { $method = $Matches[1]; $path = $Matches[2] }
+      $len = 0
+      while ($true) { $hl = $sr.ReadLine(); if ($hl -eq $null -or $hl -eq '') { break }; if ($hl -match '^Content-Length:\s*(\d+)') { $len = [int]$Matches[1] } }
+      $from = ([Net.IPEndPoint]$c.Client.RemoteEndPoint).Address.ToString() -replace '^::ffff:', ''
+      $trusted = @($SetupFrom | Where-Object { $from.StartsWith($_) }).Count -gt 0
       $type = 'text/plain'; $code = '200 OK'
+      if ($method -eq 'POST') {
+        $form = ''
+        if ($len -gt 0 -and $len -le 2048) { $buf = New-Object char[] $len; $n = 0; while ($n -lt $len) { $r = $sr.Read($buf, $n, $len - $n); if ($r -le 0) { break }; $n += $r }; $form = -join $buf[0..($n - 1)] }
+        if ($path -ne '/setup') { $code = '404 Not Found'; $body = 'not found' }
+        elseif (-not $trusted) { $code = '403 Forbidden'; $body = 'Only from a Tailscale device.' }
+        elseif ($NoMqtt) { $code = '409 Conflict'; $body = 'MQTT is switched off on this relay.' }
+        else {
+          $pw = $null
+          foreach ($kv in $form -split '&') { if ($kv -like 'pass=*') { $pw = [Uri]::UnescapeDataString($kv.Substring(5).Replace('+', ' ')) } }
+          if ([string]::IsNullOrEmpty($pw)) { $code = '400 Bad Request'; $body = 'Password missing.' }
+          else {
+            $nc = @{ Host=$MqttHost; Port=$MqttPort; Tls=(-not $NoTls); User=$MqttUser; Pass=$pw }
+            Save-Config -Path $script:CfgPath -Cfg $nc
+            $script:NewCfg = $nc
+            $body = 'Saved on the Surface. Connecting...'
+          }
+        }
+        $path = '/__done'
+      }
       switch -Regex ($path) {
+        '^/__done' { }
+        '^/relay'  { $body = (@{ mqtt=$script:MqttState; host=$MqttHost; user=$MqttUser; canSetup=($trusted -and -not $NoMqtt) } | ConvertTo-Json -Compress); $type = 'application/json' }
         '^/status' { if ($Latest) { $body = $Latest; $type = 'application/json' } else { $code = '503 No data'; $body = 'no AiO reading yet' } }
         '^/recent' { $body = ConvertTo-Json -InputObject @($script:Recent.ToArray()) -Compress; if ($script:Recent.Count -eq 0) { $body = '[]' }; $type = 'application/json' }
         '^/log'    { $f = Log-Path 'log';   $body = if (Test-Path $f) { [IO.File]::ReadAllText($f) } else { '' } }
@@ -387,16 +419,22 @@ $cfgPath = Get-ConfigPath
 # Allow fully-headless launch via parameters (used by tests and anyone who
 # wants to script it). Otherwise we load the saved config or prompt once.
 $cfg = $null
+$script:Waiting = $false
 if ($NoMqtt) {
   $cfg = @{ Disabled=$true }
-} elseif ($MqttHost) {
+} elseif ($MqttPass) {
   $cfg = @{ Host=$MqttHost; Port=$MqttPort; Tls=(-not $NoTls); User=$MqttUser; Pass=$MqttPass }
 } elseif ($Reconfigure) {
   $cfg = Prompt-Config -Path $cfgPath
 } else {
   $cfg = Load-Config -Path $cfgPath
-  if (-not $cfg) { $cfg = Prompt-Config -Path $cfgPath }
+  if (-not $cfg -or $cfg.Disabled) {
+    # No password yet: run without MQTT and wait for it from the phone page.
+    $cfg = @{ Disabled=$true }; $script:Waiting = $true
+  }
 }
+$script:CfgPath = $cfgPath
+$script:NewCfg = $null
 
 $mqttOn = -not $cfg.Disabled
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
@@ -419,6 +457,8 @@ if ($listener) {
 if ($mqttOn) {
   Say "   broker:  $($cfg.Host):$($cfg.Port) ($(if ($cfg.Tls) { 'TLS' } else { 'plain' })) as $($cfg.User)"
   Say "   status:  $TopicStatus (retained, 1/s)   mark: $TopicMark"
+} elseif ($script:Waiting) {
+  Say "   MQTT:    waiting for the password (set it from the phone page over Tailscale)"
 } else {
   Say "   MQTT:    off"
 }
@@ -441,6 +481,13 @@ while ($true) {
   $tickStart = [Environment]::TickCount
 
   # Start a new reconnect attempt only when idle and the backoff has elapsed.
+  if ($script:NewCfg) {
+    $cfg = $script:NewCfg; $script:NewCfg = $null; $script:Waiting = $false
+    $mqttOn = $true; $nextReconnectMs = 0; $backoffMs = 1000
+    if ($conn) { Close-MqttConnection $conn; $conn = $null }
+    Say ("[{0}] MQTT: password set from the phone page; connecting to {1} as {2}" -f (Get-Date -Format 'HH:mm:ss'), $cfg.Host, $cfg.User)
+  }
+  $script:MqttState = if (-not $mqttOn) { if ($script:Waiting) { 'waiting' } else { 'off' } } elseif ($conn) { 'connected' } else { 'connecting' }
   if ($mqttOn -and -not $conn -and -not $pending -and $tickStart -ge $nextReconnectMs) {
     try {
       $pending = Start-MqttConnect -Cfg $cfg

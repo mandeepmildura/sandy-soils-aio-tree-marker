@@ -29,6 +29,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -233,9 +234,11 @@ def free_port() -> int:
 
 
 def start_relay(aio_port: int, mqtt_port: int, cfg_path: str, log_dir: str, share_port: int,
-                no_mqtt: bool = False) -> subprocess.Popen:
+                no_mqtt: bool = False, setup_from: str | None = None, with_pass: bool = True) -> subprocess.Popen:
     mqtt = ["-NoMqtt"] if no_mqtt else ["-MqttHost", "127.0.0.1", "-MqttPort", str(mqtt_port),
-                                        "-NoTls", "-MqttUser", "u", "-MqttPass", "p"]
+                                        "-NoTls", "-MqttUser", "u"] + (["-MqttPass", "p"] if with_pass else [])
+    if setup_from:
+        mqtt += ["-SetupFrom", setup_from]
     return subprocess.Popen(
         [
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -421,6 +424,58 @@ def test_main() -> int:
                 relay2.wait(timeout=3)
             except Exception:
                 relay2.kill()
+
+        # 8. No password on the Surface: runs without MQTT, refuses setup from a
+        #    non-Tailscale address, accepts it from an allowed one, connects, and
+        #    remembers it after a restart.
+        def post_setup(port, pw):
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/setup", data=f"pass={pw}".encode(), method="POST",
+                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
+            try:
+                r = urllib.request.urlopen(req, timeout=3); return r.status, r.read().decode()
+            except urllib.error.HTTPError as e:
+                return e.code, e.read().decode()
+        def relay_state(port):
+            try:
+                return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/relay", timeout=1).read())
+            except Exception:
+                return {}
+        cfg8 = cfg_path + ".prov.xml"
+        for f in (cfg8,):
+            if os.path.exists(f): os.remove(f)
+        log8 = tempfile.mkdtemp(prefix="aio_logs_prov_")
+        sp8 = free_port()
+        r8 = start_relay(aio_port, broker.port, cfg8, log8, sp8, with_pass=False)   # default SetupFrom = 100.
+        o8: list[str] = []
+        threading.Thread(target=drain, args=(r8, o8), daemon=True).start()
+        try:
+            wait_for(lambda: relay_state(sp8).get("mqtt") == "waiting", timeout=15, hint="relay waiting for password")
+            code, txt = post_setup(sp8, "p")
+            assert code == 403 and not os.path.exists(cfg8), (code, txt)
+            assert relay_state(sp8)["canSetup"] is False
+        finally:
+            r8.terminate(); r8.wait(timeout=5)
+        n_before = len(broker.received)
+        r9 = start_relay(aio_port, broker.port, cfg8, log8, sp8, with_pass=False, setup_from="127.")
+        o9: list[str] = []
+        threading.Thread(target=drain, args=(r9, o9), daemon=True).start()
+        try:
+            wait_for(lambda: relay_state(sp8).get("canSetup") is True, timeout=15, hint="setup allowed from 127.")
+            code, txt = post_setup(sp8, "p")
+            assert code == 200 and os.path.exists(cfg8), (code, txt)
+            wait_for(lambda: relay_state(sp8).get("mqtt") == "connected", timeout=15, hint="connected after setup")
+            wait_for(lambda: len(broker.received) > n_before, timeout=10, hint="publishes after setup")
+            assert "p" not in [ln.strip() for ln in o9], "password echoed"
+        finally:
+            r9.terminate(); r9.wait(timeout=5)
+        r10 = start_relay(aio_port, broker.port, cfg8, log8, sp8, with_pass=False)
+        threading.Thread(target=drain, args=(r10, []), daemon=True).start()
+        try:
+            wait_for(lambda: relay_state(sp8).get("mqtt") == "connected", timeout=20, hint="remembered after restart")
+        finally:
+            r10.terminate(); r10.wait(timeout=5)
+            if os.path.exists(cfg8): os.remove(cfg8)
+        print("  [8] no password: waits; setup from non-Tailscale refused (403); allowed setup connects; remembered after restart OK")
 
         print("\nAll checks passed.")
         return 0
