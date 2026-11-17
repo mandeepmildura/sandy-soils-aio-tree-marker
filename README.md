@@ -76,8 +76,9 @@ without MQTT. It then:
 
 - reads the AiO once a second (the only client the AiO has),
 - logs every reading to `Documents\AiO logsio-log-<date>.csv` and every mark to `aio-marks-<date>.csv`,
-- shares the latest reading on port 8126 of every network the Surface is on (e.g. the phone hotspot):
-  `http://<surface-ip>:8126/status`, `/log`, `/marks`. The window prints the addresses. Windows asks once to allow
+- serves a phone page at `http://<surface-ip>:8126/` (big MARK flash, GPS, speed, nearest tree, last 20 marks with
+  tree, direction and miss, download links), plus raw data at `/status`, `/recent`, `/log`, `/marks`, on every network
+  the Surface is on (phone hotspot, or from anywhere through Tailscale). The window prints the addresses. Windows asks once to allow
   the firewall: choose **Allow**,
 - optionally publishes to HiveMQ (`treemarker/aio/status`, `treemarker/aio/mark`) for `tools/watch_aio.py`.
 

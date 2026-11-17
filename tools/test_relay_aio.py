@@ -387,6 +387,14 @@ def test_main() -> int:
         with aio_state.lock:
             extra = aio_state.requests - req_before
         assert extra <= 2, f"share reads should not hit the AiO (extra AiO requests: {extra})"
+        page = urllib.request.urlopen(f"http://127.0.0.1:{share_port}/", timeout=3).read().decode()
+        assert "<title>AiO marks</title>" in page and "/recent" in page, page[:200]
+        recent = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{share_port}/recent", timeout=3).read())
+        assert isinstance(recent, list) and recent and recent[-1]["tree"] == 3 and abs(recent[-1]["miss"] + 0.42) < 1e-6, recent
+        r = urllib.request.urlopen(f"http://127.0.0.1:{share_port}/marks?dl=1", timeout=3)
+        assert "attachment" in (r.headers.get("Content-Disposition") or ""), dict(r.headers)
+        assert "text/plain" in urllib.request.urlopen(f"http://127.0.0.1:{share_port}/marks", timeout=3).headers.get("Content-Type")
+        print(f"  [6a] phone page {len(page)} bytes, /recent {len(recent)} mark(s), CSV view + download OK")
         print(f"  [6] CSV log {len(rows) - 1} rows, marks file OK, share /status in {dt * 1000:.0f} ms, "
               f"10 share reads -> {extra} AiO requests OK")
 

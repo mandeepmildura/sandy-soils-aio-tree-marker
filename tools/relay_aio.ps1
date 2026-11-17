@@ -281,6 +281,76 @@ function Log-Mark {
   Append-Csv -Path (Log-Path 'marks') -Header ('time,' + ($cols -join ',')) -Row ($row -join ',')
 }
 
+# ----- phone page (GET /) --------------------------------------------------
+$script:PhonePage = @'
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AiO marks</title><style>
+:root{--bg:#f4f3ef;--card:#fff;--fg:#1c1d19;--mut:#666b60;--ok:#1f8a3b;--warn:#b7791f;--bad:#c0392b;--line:#e3e0d7}
+@media (prefers-color-scheme:dark){:root{--bg:#141512;--card:#1f211c;--fg:#ecebe5;--mut:#a2a69a;--line:#33362f}}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.4 system-ui,sans-serif}
+main{max-width:34rem;margin:0 auto;padding:12px 14px 30px;display:grid;gap:12px}
+#flash{font:800 2rem system-ui;text-align:center;padding:16px;border-radius:12px;background:var(--card);color:var(--mut);transition:background .15s}
+#flash.on{background:var(--ok);color:#fff}
+.card{background:var(--card);border-radius:12px;padding:10px 14px}
+.row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)}.row:last-child{border:0}
+.row b{font-variant-numeric:tabular-nums;text-align:right}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}td,th{padding:6px 4px;text-align:left;border-bottom:1px solid var(--line)}th{color:var(--mut);font-weight:600;font-size:.85rem}
+small,.mut{color:var(--mut)}a{color:inherit}
+</style></head><body><main>
+<div id="flash">waiting for marks</div>
+<div class="card">
+<div class="row"><span>GPS</span><b id="gps">-</b></div>
+<div class="row"><span>Speed</span><b id="spd">-</b></div>
+<div class="row"><span>Nearest tree</span><b id="near">-</b></div>
+<div class="row"><span>Trees marked</span><b id="hits">-</b></div>
+<div class="row"><span>Field</span><b id="field">-</b></div>
+</div>
+<div class="card"><table><thead><tr><th>Time</th><th>Tree</th><th>Dir</th><th>Miss</th><th>km/h</th></tr></thead><tbody id="list"><tr><td colspan="5" class="mut">no marks yet</td></tr></tbody></table></div>
+<div class="card"><small id="set">-</small><br><small><a href="/log?dl=1">Download today's log</a> &middot; <a href="/marks?dl=1">Download marks</a></small></div>
+</main><script>
+var $=function(i){return document.getElementById(i)},last=-1,ft;
+var FIX={0:['no fix','bad'],1:['GPS only','bad'],2:['DGPS','warn'],4:['RTK fixed','ok'],5:['RTK float','warn'],9:['simulated','warn']};
+function cm(m){return Math.round(Math.abs(m)*100)}
+function st(){fetch('/status',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+ var f=FIX[d.fix]||[String(d.fix),'warn'];$('gps').innerHTML='<span class="'+f[1]+'">'+f[0]+'</span> &middot; '+d.hz.toFixed(0)+'/s';
+ $('spd').textContent=(d.spd*3.6).toFixed(1)+' km/h';
+ $('near').textContent=d.nd<0?'-':Math.abs(d.na).toFixed(2)+' m '+(d.na>=0?'ahead':'behind')+' \u00b7 '+cm(d.nc)+' cm '+(d.nc>=0?'right':'left');
+ $('hits').textContent=d.hits+' of '+d.trees;$('field').textContent=d.field||'none';
+ $('set').textContent='v'+d.ver+' \u00b7 pulse '+d.pulse+' ms \u00b7 lag '+d.lag+' ms \u00b7 behind '+d.fa+' m \u00b7 right '+d.lat+' m \u00b7 shift N '+d.sn+' E '+d.se;
+ if(last>=0&&d.hits>last){$('flash').className='on';$('flash').textContent='MARK #'+d.hits;clearTimeout(ft);ft=setTimeout(function(){$('flash').className=''},900);rec()}
+ last=d.hits}).catch(function(){$('gps').innerHTML='<span class="bad">no data</span>'})}
+function rec(){fetch('/recent',{cache:'no-store'}).then(function(r){return r.json()}).then(function(a){if(!a.length)return;
+ $('list').innerHTML=a.slice().reverse().map(function(m){return '<tr><td>'+m.t+'</td><td>'+(m.tree+1)+'</td><td>'+m.dir+'</td><td>'+cm(m.miss)+' cm</td><td>'+m.kmh+'</td></tr>'}).join('')})}
+st();rec();setInterval(st,1000);setInterval(rec,5000);
+</script></body></html>
+'@
+
+# heading from recent positions (deg true, 0 = north), $null when not moving
+$script:Track = New-Object System.Collections.Generic.List[object]
+function Update-Heading {
+  param($J)
+  $now = [Environment]::TickCount
+  $script:Track.Add(@{ T=$now; La=[double]$J.la; Lo=[double]$J.lo })
+  while ($script:Track.Count -gt 0 -and ($now - $script:Track[0].T) -gt 3000) { $script:Track.RemoveAt(0) }
+  if ($script:Track.Count -lt 2 -or [double]$J.spd -lt 0.2) { return $null }
+  $a = $script:Track[0]; $b = $script:Track[$script:Track.Count - 1]
+  $dn = ($b.La - $a.La) * 111319.49
+  $de = ($b.Lo - $a.Lo) * 111319.49 * [Math]::Cos($b.La * [Math]::PI / 180)
+  if ([Math]::Sqrt($dn*$dn + $de*$de) -lt 0.3) { return $null }
+  $h = [Math]::Atan2($de, $dn) * 180 / [Math]::PI
+  if ($h -lt 0) { $h += 360 }
+  $h
+}
+function Compass { param($H) if ($H -eq $null) { return '-' } ; @('N','NE','E','SE','S','SW','W','NW')[[int][Math]::Floor((([double]$H + 22.5) % 360) / 45)] }
+$script:Recent = New-Object System.Collections.Generic.List[object]
+function Add-Recent {
+  param($J, $Heading)
+  $script:Recent.Add([ordered]@{ t=(Get-Date -Format 'HH:mm:ss'); tree=[int64]$J.lhi; miss=[double]$J.lhm; dir=(Compass $Heading);
+                                 kmh=[Math]::Round([double]$J.spd * 3.6, 1); fix=[int]$J.fix })
+  while ($script:Recent.Count -gt 20) { $script:Recent.RemoveAt(0) }
+}
+
 # ----- share on the local network (TcpListener, no admin needed) ----------
 function Serve-Share {
   param($Listener, [string]$Latest)
@@ -295,12 +365,17 @@ function Serve-Share {
       $type = 'text/plain'; $code = '200 OK'
       switch -Regex ($path) {
         '^/status' { if ($Latest) { $body = $Latest; $type = 'application/json' } else { $code = '503 No data'; $body = 'no AiO reading yet' } }
-        '^/log'    { $f = Log-Path 'log';   $body = if (Test-Path $f) { [IO.File]::ReadAllText($f) } else { '' }; $type = 'text/csv' }
-        '^/marks'  { $f = Log-Path 'marks'; $body = if (Test-Path $f) { [IO.File]::ReadAllText($f) } else { '' }; $type = 'text/csv' }
-        default    { $body = "AiO relay on the Surface: /status /log /marks`r`n" }
+        '^/recent' { $body = ConvertTo-Json -InputObject @($script:Recent.ToArray()) -Compress; if ($script:Recent.Count -eq 0) { $body = '[]' }; $type = 'application/json' }
+        '^/log'    { $f = Log-Path 'log';   $body = if (Test-Path $f) { [IO.File]::ReadAllText($f) } else { '' } }
+        '^/marks'  { $f = Log-Path 'marks'; $body = if (Test-Path $f) { [IO.File]::ReadAllText($f) } else { '' } }
+        '^/(\?|$)' { $body = $script:PhonePage; $type = 'text/html; charset=utf-8' }
+        default    { $code = '404 Not Found'; $body = "AiO relay: / (phone page) /status /recent /log /marks`r`n" }
       }
+      # CSVs show in the browser as text; ?dl=1 downloads them as a file
+      $extra = ''
+      if ($path -match '^/(log|marks)\?dl') { $type = 'text/csv'; $extra = "Content-Disposition: attachment; filename=""aio-$($Matches[1])-$(Get-Date -Format 'yyyy-MM-dd').csv""`r`n" }
       $b = [Text.Encoding]::UTF8.GetBytes($body)
-      $h = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 $code`r`nContent-Type: $type`r`nContent-Length: $($b.Length)`r`nAccess-Control-Allow-Origin: *`r`nConnection: close`r`n`r`n")
+      $h = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 $code`r`nContent-Type: $type`r`nContent-Length: $($b.Length)`r`n$($extra)Cache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nConnection: close`r`n`r`n")
       $ns.Write($h, 0, $h.Length); $ns.Write($b, 0, $b.Length); $ns.Flush()
     } catch { } finally { try { $c.Close() } catch { } }
   }
@@ -339,7 +414,7 @@ Say "   AiO:     $AioUrl"
 Say "   logs:    $LogDir  (aio-log-<date>.csv every second, aio-marks-<date>.csv per mark)"
 if ($listener) {
   $ips = [Net.Dns]::GetHostAddresses([Net.Dns]::GetHostName()) | Where-Object { $_.AddressFamily -eq 'InterNetwork' -and $_.ToString() -notlike '127.*' } | ForEach-Object { $_.ToString() }
-  foreach ($ip in $ips) { Say "   share:   http://${ip}:$SharePort/status   /log   /marks" }
+  foreach ($ip in $ips) { Say "   phone:   http://${ip}:$SharePort/      (data: /status /recent /log /marks)" }
 }
 if ($mqttOn) {
   Say "   broker:  $($cfg.Host):$($cfg.Port) ($(if ($cfg.Tls) { 'TLS' } else { 'plain' })) as $($cfg.User)"
@@ -414,12 +489,15 @@ while ($true) {
     try { $j = $body | ConvertFrom-Json } catch { Say ("[{0}] bad /status body: {1}" -f (Get-Date -Format 'HH:mm:ss'), $_.Exception.Message) }
     if ($j) {
       try { Log-Status $j } catch { Say ("[{0}] log write failed: {1}" -f (Get-Date -Format 'HH:mm:ss'), $_.Exception.Message) }
+      $heading = $null
+      try { $heading = Update-Heading $j } catch { }
       $hits  = [int64]$j.hits
       $fires = [int64]$j.fires
       $rose = ($lastHits -ne $null -and $hits -gt $lastHits) -or ($lastFires -ne $null -and $fires -gt $lastFires)
       $lastHits = $hits; $lastFires = $fires
       if ($rose) {
         try { Log-Mark $j } catch { Say ("[{0}] marks write failed: {1}" -f (Get-Date -Format 'HH:mm:ss'), $_.Exception.Message) }
+        try { Add-Recent $j $heading } catch { }
         $lastMark = "lhi=$($j.lhi) lhm=$($j.lhm) (hits=$hits fires=$fires)"
         Say ("[{0}] MARK -> {1}" -f (Get-Date -Format 'HH:mm:ss'), $lastMark)
       }
