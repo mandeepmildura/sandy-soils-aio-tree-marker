@@ -10,6 +10,9 @@ Stands up a fake AiO HTTP server (/status) and a minimal MQTT broker, then:
      reconnects and keeps publishing.
   4. Drops the AiO and brings it back; asserts relay recovers.
   5. Launches watch_aio.py against the broker and asserts it prints a line.
+  6. Checks the per-day CSV log and marks file, and the local share
+     (/status answers fast with the latest reading, /marks has the mark).
+  7. Runs a second relay with -NoMqtt and checks it still logs and shares.
 
 Runs on Windows PowerShell 5.1 with no extra modules. No real broker or
 board needed.
@@ -25,6 +28,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -224,21 +228,26 @@ class MiniBroker:
 
 # ---------- helpers ---------------------------------------------------------
 
-def start_relay(aio_port: int, mqtt_port: int, cfg_path: str) -> subprocess.Popen:
+def free_port() -> int:
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
+
+
+def start_relay(aio_port: int, mqtt_port: int, cfg_path: str, log_dir: str, share_port: int,
+                no_mqtt: bool = False) -> subprocess.Popen:
+    mqtt = ["-NoMqtt"] if no_mqtt else ["-MqttHost", "127.0.0.1", "-MqttPort", str(mqtt_port),
+                                        "-NoTls", "-MqttUser", "u", "-MqttPass", "p"]
     return subprocess.Popen(
         [
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", PS1,
             "-AioUrl", f"http://127.0.0.1:{aio_port}/status",
-            "-MqttHost", "127.0.0.1",
-            "-MqttPort", str(mqtt_port),
-            "-NoTls",
-            "-MqttUser", "u",
-            "-MqttPass", "p",
+            *mqtt,
             "-ConfigFile", cfg_path,
             "-AioTimeoutSec", "1",
             "-KeepAliveSec", "15",
             "-StatusEverySec", "3",
+            "-LogDir", log_dir,
+            "-SharePort", str(share_port),
         ],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1,
@@ -273,8 +282,10 @@ def test_main() -> int:
     if os.path.exists(cfg_path):
         os.remove(cfg_path)
 
-    print(f"AiO on :{aio_port}  broker on :{broker.port}")
-    relay = start_relay(aio_port, broker.port, cfg_path)
+    log_dir = tempfile.mkdtemp(prefix="aio_logs_")
+    share_port = free_port()
+    print(f"AiO on :{aio_port}  broker on :{broker.port}  share on :{share_port}")
+    relay = start_relay(aio_port, broker.port, cfg_path, log_dir, share_port)
     out: list[str] = []
     threading.Thread(target=drain, args=(relay, out), daemon=True).start()
 
@@ -353,6 +364,55 @@ def test_main() -> int:
                 watch.wait(timeout=3)
             except Exception:
                 watch.kill()
+
+        # 6. CSV log, marks file and the local share.
+        files = os.listdir(log_dir)
+        log_f = [f for f in files if f.startswith("aio-log-")]
+        mark_f = [f for f in files if f.startswith("aio-marks-")]
+        assert log_f and mark_f, f"expected log and marks CSVs in {log_dir}, got {files}"
+        rows = open(os.path.join(log_dir, log_f[0]), encoding="utf-8").read().splitlines()
+        assert rows[0].startswith("time,ver,fix,hz") and len(rows) >= 5, rows[:3]
+        marks = open(os.path.join(log_dir, mark_f[0]), encoding="utf-8").read().splitlines()
+        assert any(",3,-0.42," in r for r in marks[1:]), marks
+        t0 = time.time()
+        st = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{share_port}/status", timeout=3).read())
+        dt = time.time() - t0
+        assert st["hits"] == 7 and dt < 0.5, (st, dt)
+        shared_marks = urllib.request.urlopen(f"http://127.0.0.1:{share_port}/marks", timeout=3).read().decode()
+        assert ",3,-0.42," in shared_marks
+        with aio_state.lock:
+            req_before = aio_state.requests
+        for _ in range(10):
+            urllib.request.urlopen(f"http://127.0.0.1:{share_port}/status", timeout=3).read()
+        with aio_state.lock:
+            extra = aio_state.requests - req_before
+        assert extra <= 2, f"share reads should not hit the AiO (extra AiO requests: {extra})"
+        print(f"  [6] CSV log {len(rows) - 1} rows, marks file OK, share /status in {dt * 1000:.0f} ms, "
+              f"10 share reads -> {extra} AiO requests OK")
+
+        # 7. -NoMqtt: still logs and shares.
+        log2 = tempfile.mkdtemp(prefix="aio_logs_nomqtt_")
+        share2 = free_port()
+        cfg2 = cfg_path + ".nomqtt.xml"
+        relay2 = start_relay(aio_port, 0, cfg2, log2, share2, no_mqtt=True)
+        out2: list[str] = []
+        threading.Thread(target=drain, args=(relay2, out2), daemon=True).start()
+        try:
+            def share_ok():
+                try:
+                    return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{share2}/status", timeout=1).read())["hits"] == 7
+                except Exception:
+                    return False
+            wait_for(share_ok, timeout=15, hint="-NoMqtt relay shares /status")
+            wait_for(lambda: any(f.startswith("aio-log-") for f in os.listdir(log2)), timeout=5, hint="-NoMqtt relay logs")
+            assert any("MQTT:    off" in ln for ln in out2), out2[:12]
+            print("  [7] -NoMqtt: logs and shares, MQTT off OK")
+        finally:
+            relay2.terminate()
+            try:
+                relay2.wait(timeout=3)
+            except Exception:
+                relay2.kill()
 
         print("\nAll checks passed.")
         return 0

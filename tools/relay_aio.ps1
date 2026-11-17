@@ -1,4 +1,11 @@
-# AiO -> HiveMQ Cloud relay (Win PowerShell 5.1, no modules).
+# AiO relay for the cab Surface (Win PowerShell 5.1, no modules).
+# 1. Logs every AiO /status reading (1/s) to a CSV per day, and every mark to
+#    a marks CSV, under Documents\AiO logs. Works with no internet.
+# 2. Shares the latest reading on port 8126 (any network the Surface is on,
+#    e.g. the phone hotspot): GET /status, /log (today's CSV), /marks. Another
+#    PC reads the Surface, never the AiO, so the AiO keeps a single client.
+# 3. Optionally publishes to HiveMQ Cloud (press Enter at the host prompt
+#    to run without MQTT).
 # Reads http://<aio>/status once a second, publishes JSON to
 # treemarker/aio/status (retained). When hits or fires rises, publishes
 # a one-shot message to treemarker/aio/mark with the latest lhi/lhm.
@@ -25,7 +32,11 @@ param(
   [int]   $PollMs = 1000,
   [int]   $AioTimeoutSec = 2,
   [int]   $KeepAliveSec = 30,
-  [int]   $StatusEverySec = 10
+  [int]   $StatusEverySec = 10,
+  [string]$LogDir = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'AiO logs'),
+  [int]   $SharePort = 8126,
+  [switch]$NoShare,
+  [switch]$NoMqtt
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,6 +58,7 @@ function Load-Config {
   if (-not (Test-Path $Path)) { return $null }
   try {
     $raw = Import-Clixml $Path
+    if ($raw.Disabled) { return @{ Disabled=$true } }
     $sec = ConvertTo-SecureString $raw.Pass
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
     try   { $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
@@ -63,7 +75,12 @@ function Prompt-Config {
   Say ''
   Say 'AiO -> HiveMQ relay: first-run setup'
   Say '------------------------------------'
-  $h = Read-Host 'HiveMQ host (e.g. xxxxx.s2.eu.hivemq.cloud)'
+  $h = Read-Host 'HiveMQ host (e.g. xxxxx.s2.eu.hivemq.cloud), or just Enter to run without MQTT'
+  if ([string]::IsNullOrWhiteSpace($h)) {
+    @{ Disabled=$true } | Export-Clixml $Path
+    Say "MQTT off (logging and sharing still run). Use -Reconfigure to set it up later."
+    return @{ Disabled=$true }
+  }
   $portStr = Read-Host 'Port [8883]'
   $port = if ([string]::IsNullOrWhiteSpace($portStr)) { 8883 } else { [int]$portStr }
   $u = Read-Host 'Username (Surface publish user)'
@@ -243,13 +260,61 @@ function Get-AioStatus {
   }
 }
 
+# ----- CSV logging ---------------------------------------------------------
+$script:LogCols = 'ver','fix','hz','spd','la','lo','field','trees','hits','fires','on','ni','nd','na','nc','lhi','lhm','en','cyt','dir','pulse','lag','hr','fa','lat','sn','se'
+function Csv-Field { param($v) $s = [string]$v; if ($s -match '[",\r\n]') { '"' + $s.Replace('"','""') + '"' } else { $s } }
+function Log-Path { param([string]$Kind) Join-Path $LogDir ("aio-" + $Kind + "-" + (Get-Date -Format 'yyyy-MM-dd') + ".csv") }
+function Append-Csv {
+  param([string]$Path, [string]$Header, [string]$Row)
+  if (-not (Test-Path $Path)) { [IO.File]::AppendAllText($Path, $Header + "`r`n") }
+  [IO.File]::AppendAllText($Path, $Row + "`r`n")
+}
+function Log-Status {
+  param($J)
+  $row = @((Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')) + ($script:LogCols | ForEach-Object { Csv-Field $J.$_ })
+  Append-Csv -Path (Log-Path 'log') -Header ('time,' + ($script:LogCols -join ',')) -Row ($row -join ',')
+}
+function Log-Mark {
+  param($J)
+  $cols = 'hits','fires','lhi','lhm','spd','la','lo','fix','field'
+  $row = @((Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')) + ($cols | ForEach-Object { Csv-Field $J.$_ })
+  Append-Csv -Path (Log-Path 'marks') -Header ('time,' + ($cols -join ',')) -Row ($row -join ',')
+}
+
+# ----- share on the local network (TcpListener, no admin needed) ----------
+function Serve-Share {
+  param($Listener, [string]$Latest)
+  while ($Listener.Pending()) {
+    $c = $Listener.AcceptTcpClient()
+    try {
+      $c.ReceiveTimeout = 500; $c.SendTimeout = 2000
+      $ns = $c.GetStream()
+      $sr = New-Object System.IO.StreamReader($ns)
+      $line = $sr.ReadLine()
+      $path = if ($line -match '^GET (\S+)') { $Matches[1] } else { '' }
+      $type = 'text/plain'; $code = '200 OK'
+      switch -Regex ($path) {
+        '^/status' { if ($Latest) { $body = $Latest; $type = 'application/json' } else { $code = '503 No data'; $body = 'no AiO reading yet' } }
+        '^/log'    { $f = Log-Path 'log';   $body = if (Test-Path $f) { [IO.File]::ReadAllText($f) } else { '' }; $type = 'text/csv' }
+        '^/marks'  { $f = Log-Path 'marks'; $body = if (Test-Path $f) { [IO.File]::ReadAllText($f) } else { '' }; $type = 'text/csv' }
+        default    { $body = "AiO relay on the Surface: /status /log /marks`r`n" }
+      }
+      $b = [Text.Encoding]::UTF8.GetBytes($body)
+      $h = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 $code`r`nContent-Type: $type`r`nContent-Length: $($b.Length)`r`nAccess-Control-Allow-Origin: *`r`nConnection: close`r`n`r`n")
+      $ns.Write($h, 0, $h.Length); $ns.Write($b, 0, $b.Length); $ns.Flush()
+    } catch { } finally { try { $c.Close() } catch { } }
+  }
+}
+
 # ----- main ---------------------------------------------------------------
 $cfgPath = Get-ConfigPath
 
 # Allow fully-headless launch via parameters (used by tests and anyone who
 # wants to script it). Otherwise we load the saved config or prompt once.
 $cfg = $null
-if ($MqttHost) {
+if ($NoMqtt) {
+  $cfg = @{ Disabled=$true }
+} elseif ($MqttHost) {
   $cfg = @{ Host=$MqttHost; Port=$MqttPort; Tls=(-not $NoTls); User=$MqttUser; Pass=$MqttPass }
 } elseif ($Reconfigure) {
   $cfg = Prompt-Config -Path $cfgPath
@@ -258,14 +323,33 @@ if ($MqttHost) {
   if (-not $cfg) { $cfg = Prompt-Config -Path $cfgPath }
 }
 
+$mqttOn = -not $cfg.Disabled
+if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
+$listener = $null
+if (-not $NoShare) {
+  try {
+    $listener = New-Object System.Net.Sockets.TcpListener([Net.IPAddress]::Any, $SharePort)
+    $listener.Start()
+  } catch { Say "Share port $SharePort unavailable: $($_.Exception.Message)"; $listener = $null }
+}
+
 Say ""
-Say "AiO -> HiveMQ relay"
+Say "AiO relay (keep this window open while marking)"
 Say "   AiO:     $AioUrl"
-Say "   broker:  $($cfg.Host):$($cfg.Port) ($(if ($cfg.Tls) { 'TLS' } else { 'plain' })) as $($cfg.User)"
-Say "   status:  $TopicStatus (retained, 1/s)"
-Say "   mark:    $TopicMark (on hits/fires change)"
+Say "   logs:    $LogDir  (aio-log-<date>.csv every second, aio-marks-<date>.csv per mark)"
+if ($listener) {
+  $ips = [Net.Dns]::GetHostAddresses([Net.Dns]::GetHostName()) | Where-Object { $_.AddressFamily -eq 'InterNetwork' -and $_.ToString() -notlike '127.*' } | ForEach-Object { $_.ToString() }
+  foreach ($ip in $ips) { Say "   share:   http://${ip}:$SharePort/status   /log   /marks" }
+}
+if ($mqttOn) {
+  Say "   broker:  $($cfg.Host):$($cfg.Port) ($(if ($cfg.Tls) { 'TLS' } else { 'plain' })) as $($cfg.User)"
+  Say "   status:  $TopicStatus (retained, 1/s)   mark: $TopicMark"
+} else {
+  Say "   MQTT:    off"
+}
 Say "   Ctrl+C to stop."
 Say ""
+$latest = $null
 
 $conn = $null
 $pending = $null
@@ -282,7 +366,7 @@ while ($true) {
   $tickStart = [Environment]::TickCount
 
   # Start a new reconnect attempt only when idle and the backoff has elapsed.
-  if (-not $conn -and -not $pending -and $tickStart -ge $nextReconnectMs) {
+  if ($mqttOn -and -not $conn -and -not $pending -and $tickStart -ge $nextReconnectMs) {
     try {
       $pending = Start-MqttConnect -Cfg $cfg
     } catch {
@@ -324,27 +408,26 @@ while ($true) {
     }
   }
 
-  if ($body -and $conn) {
-    try {
-      Send-MqttPublish -Conn $conn -Topic $TopicStatus -Payload $body -Retain $true
-    } catch {
-      Say ("[" + (Get-Date -Format 'HH:mm:ss') + "] MQTT: publish failed - " + $_.Exception.Message + "; will reconnect")
-      Close-MqttConnection $conn; $conn = $null
-      $nextReconnectMs = [Environment]::TickCount + $backoffMs
+  if ($body) {
+    $latest = $body
+    $j = $null
+    try { $j = $body | ConvertFrom-Json } catch { Say ("[{0}] bad /status body: {1}" -f (Get-Date -Format 'HH:mm:ss'), $_.Exception.Message) }
+    if ($j) {
+      try { Log-Status $j } catch { Say ("[{0}] log write failed: {1}" -f (Get-Date -Format 'HH:mm:ss'), $_.Exception.Message) }
+      $hits  = [int64]$j.hits
+      $fires = [int64]$j.fires
+      $rose = ($lastHits -ne $null -and $hits -gt $lastHits) -or ($lastFires -ne $null -and $fires -gt $lastFires)
+      $lastHits = $hits; $lastFires = $fires
+      if ($rose) {
+        try { Log-Mark $j } catch { Say ("[{0}] marks write failed: {1}" -f (Get-Date -Format 'HH:mm:ss'), $_.Exception.Message) }
+        $lastMark = "lhi=$($j.lhi) lhm=$($j.lhm) (hits=$hits fires=$fires)"
+        Say ("[{0}] MARK -> {1}" -f (Get-Date -Format 'HH:mm:ss'), $lastMark)
+      }
     }
-
-    # Mark event on hits/fires rising edge.
     if ($conn) {
       try {
-        $j = $body | ConvertFrom-Json
-        $hits  = [int64]$j.hits
-        $fires = [int64]$j.fires
-        $rose = $false
-        if ($lastHits  -ne $null -and $hits  -gt $lastHits)  { $rose = $true }
-        if ($lastFires -ne $null -and $fires -gt $lastFires) { $rose = $true }
-        $lastHits  = $hits
-        $lastFires = $fires
-        if ($rose) {
+        Send-MqttPublish -Conn $conn -Topic $TopicStatus -Payload $body -Retain $true
+        if ($j -and $rose) {
           $mark = @{
             t     = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffzzz')
             hits  = $hits
@@ -357,15 +440,16 @@ while ($true) {
             field = $j.field
           } | ConvertTo-Json -Compress
           Send-MqttPublish -Conn $conn -Topic $TopicMark -Payload $mark -Retain $false
-          $lastMark = "lhi=$($j.lhi) lhm=$($j.lhm) (hits=$hits fires=$fires)"
-          Say ("[{0}] MARK -> {1}" -f (Get-Date -Format 'HH:mm:ss'), $lastMark)
         }
       } catch {
-        # Parsing a bad /status body or publishing the mark failed - log and carry on.
-        Say ("[{0}] mark handling: {1}" -f (Get-Date -Format 'HH:mm:ss'), $_.Exception.Message)
+        Say ("[" + (Get-Date -Format 'HH:mm:ss') + "] MQTT: publish failed - " + $_.Exception.Message + "; will reconnect")
+        Close-MqttConnection $conn; $conn = $null
+        $nextReconnectMs = [Environment]::TickCount + $backoffMs
       }
     }
   }
+
+  if ($listener) { try { Serve-Share -Listener $listener -Latest $latest } catch { } }
 
   # PINGREQ if the broker will time us out otherwise.
   if ($conn -and (([Environment]::TickCount - $conn.LastSentMs) -gt (($KeepAliveSec - 5) * 1000))) {
@@ -378,7 +462,7 @@ while ($true) {
 
   # One-liner summary every N seconds.
   if ((([Environment]::TickCount - $lastStatusPrintMs) -ge ($StatusEverySec * 1000))) {
-    $mqttStateStr = if ($conn) { 'ok' } else { 'retrying' }
+    $mqttStateStr = if (-not $mqttOn) { 'off' } elseif ($conn) { 'ok' } else { 'retrying' }
     Say ("[" + (Get-Date -Format 'HH:mm:ss') + "] AiO=" + $aioState + "  MQTT=" + $mqttStateStr + "  last mark: " + $lastMark)
     $lastStatusPrintMs = [Environment]::TickCount
   }
@@ -387,5 +471,10 @@ while ($true) {
   $nextTickMs += $PollMs
   $sleepMs = $nextTickMs - [Environment]::TickCount
   if ($sleepMs -lt 20) { $nextTickMs = [Environment]::TickCount; $sleepMs = 20 }
-  Start-Sleep -Milliseconds $sleepMs
+  # Sleep in short slices so a PC reading the share gets an answer within ~50 ms.
+  $wakeMs = [Environment]::TickCount + $sleepMs
+  while ([Environment]::TickCount -lt $wakeMs) {
+    if ($listener) { try { Serve-Share -Listener $listener -Latest $latest } catch { } }
+    Start-Sleep -Milliseconds 50
+  }
 }
