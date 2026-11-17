@@ -68,6 +68,21 @@ python tools/watch_aio.py
 
 Uses `paho-mqtt` when installed; otherwise a stdlib-only fallback.
 
+## Logging and live view (relay on the Surface)
+
+Download `relay_aio.bat` **and** `relay_aio.ps1` from the latest release into the same folder on the Surface and
+double-click the .bat; keep its window open while marking. On first run, press Enter at the HiveMQ question to run
+without MQTT. It then:
+
+- reads the AiO once a second (the only client the AiO has),
+- logs every reading to `Documents\AiO logsio-log-<date>.csv` and every mark to `aio-marks-<date>.csv`,
+- shares the latest reading on port 8126 of every network the Surface is on (e.g. the phone hotspot):
+  `http://<surface-ip>:8126/status`, `/log`, `/marks`. The window prints the addresses. Windows asks once to allow
+  the firewall: choose **Allow**,
+- optionally publishes to HiveMQ (`treemarker/aio/status`, `treemarker/aio/mark`) for `tools/watch_aio.py`.
+
+`python tools/test_relay_aio.py` tests all of it against a stand-in AiO and broker.
+
 ## Releasing
 
 Bump `AIO_TREE_VERSION` in `aio_v4_tree/zzzOta.ino`, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
