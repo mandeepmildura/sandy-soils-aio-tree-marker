@@ -2,7 +2,7 @@
 const char* asciiHex = "0123456789ABCDEF";
 
 // the new PANDA sentence buffer
-char nmea[100];
+char nmea[200];
 
 // GGA
 char fixTime[12];
@@ -334,6 +334,25 @@ void BuildNmea(void)
 
     //15
     strcat(nmea, imuYawRate);
+    strcat(nmea, ",");
+
+    // sandy 1.3.6: Keya motor telemetry for WAS-less driving research
+    //16 Keya motor encoder position (raw int16 counts)
+    char keyaPosBuf[12];
+    itoa(keyaSteeringPosition, keyaPosBuf, 10);
+    strcat(nmea, keyaPosBuf);
+    strcat(nmea, ",");
+
+    //17 Keya motor actual speed (raw int16)
+    char keyaSpdBuf[12];
+    itoa(keyaCurrentActualSpeed, keyaSpdBuf, 10);
+    strcat(nmea, keyaSpdBuf);
+    strcat(nmea, ",");
+
+    //18 GPS-derived wheel angle (degrees, 2dp)
+    char wasGpsBuf[12];
+    dtostrf(wheelAngleGPS, 4, 2, wasGpsBuf);
+    strcat(nmea, wasGpsBuf);
 
     strcat(nmea, "*");
 

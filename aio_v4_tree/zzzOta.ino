@@ -24,7 +24,7 @@ extern "C" {
 }
 
 // Tree-marker build version. Bump it, then tag v<same> to get a CI release.
-#define AIO_TREE_VERSION "1.3.5"
+#define AIO_TREE_VERSION "1.3.6"
 
 #include "zWebPage.h"
 
